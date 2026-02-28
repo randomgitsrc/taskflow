@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taskflow"
+version = "0.1.0"
+description = "A simple task management CLI tool"
+requires-python = ">=3.8"
+dependencies = [
+    "click>=8.0",
+]
+
+[project.scripts]
+taskflow = "taskflow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["taskflow*"]
