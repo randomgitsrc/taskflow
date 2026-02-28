@@ -23,6 +23,7 @@ def init(ctx: click.Context):
     """Initialize the database."""
     db = ctx.obj['db']
     db.init_db()
+    db.migrate_db()
     click.echo(f"Database initialized at: {db.db_path}")
 
 
@@ -33,9 +34,11 @@ def init(ctx: click.Context):
 @click.option('--owner', '-o', help='Task owner')
 @click.option('--external-id', help='External ID reference')
 @click.option('--external-type', help='External type reference')
+@click.option('--due-date', help='Due date (ISO format, e.g., 2026-03-15T10:00:00)')
 @click.pass_context
 def add(ctx: click.Context, title: str, description: Optional[str], parent: Optional[int],
-        owner: Optional[str], external_id: Optional[str], external_type: Optional[str]):
+        owner: Optional[str], external_id: Optional[str], external_type: Optional[str],
+        due_date: Optional[str]):
     """Add a new task."""
     db = ctx.obj['db']
     task_id = db.create_task(
@@ -44,7 +47,8 @@ def add(ctx: click.Context, title: str, description: Optional[str], parent: Opti
         parent_id=parent,
         owner=owner,
         external_id=external_id,
-        external_type=external_type
+        external_type=external_type,
+        due_date=due_date
     )
     click.echo(f"Task created: #{task_id} - {title}")
 
@@ -93,6 +97,12 @@ def status(ctx: click.Context, task_id: int):
         click.echo(f"  Parent: #{task['parent_id']}")
     if task['external_id']:
         click.echo(f"  External ID: {task['external_id']} ({task['external_type'] or 'unknown'})")
+    if task['due_date']:
+        click.echo(f"  Due: {task['due_date']}")
+    if task['started_at']:
+        click.echo(f"  Started: {task['started_at']}")
+    if task['completed_at']:
+        click.echo(f"  Completed: {task['completed_at']}")
     click.echo(f"  Created: {task['created_at']}")
     click.echo(f"  Updated: {task['updated_at']}")
 
@@ -194,6 +204,62 @@ def cancel(ctx: click.Context, task_id: int):
         else:
             db.set_task_status(task_id, TaskStatus.CANCELLED.value)
             click.echo(f"Task #{task_id} cancelled.")
+
+
+@cli.command()
+@click.argument('task_id', type=int)
+@click.pass_context
+def start(ctx: click.Context, task_id: int):
+    """Start a task (pending -> in_progress)."""
+    db = ctx.obj['db']
+    if db.update_task_status(task_id, TaskStatus.IN_PROGRESS):
+        click.echo(f"Task #{task_id} started.")
+    else:
+        task = db.get_task(task_id)
+        if not task:
+            click.echo(f"Task #{task_id} not found.", err=True)
+        else:
+            click.echo(f"Cannot start task #{task_id} from status '{task['status']}'.", err=True)
+        raise click.Exit(1)
+
+
+@cli.command()
+@click.pass_context
+def overdue(ctx: click.Context):
+    """List all overdue tasks."""
+    db = ctx.obj['db']
+    tasks = db.get_overdue_tasks()
+
+    if not tasks:
+        click.echo("No overdue tasks.")
+        return
+
+    click.echo(f"Overdue tasks ({len(tasks)} total):")
+    click.echo(f"{'ID':<6} {'Due Date':<20} {'Status':<12} {'Title'}")
+    click.echo("-" * 60)
+    for task in tasks:
+        due_display = task['due_date'][:16] if task['due_date'] else '-'
+        click.echo(f"#{task['id']:<5} {due_display:<20} {task['status']:<12} {task['title']}")
+
+
+@cli.command()
+@click.pass_context
+def stats(ctx: click.Context):
+    """Show task statistics."""
+    db = ctx.obj['db']
+    stats = db.get_stats()
+
+    click.echo("Task Statistics")
+    click.echo("=" * 40)
+    click.echo(f"Total tasks: {stats['total']}")
+    click.echo(f"Completed: {stats['completed']} ({stats['completion_rate']}%)")
+    if stats['avg_duration_hours'] > 0:
+        click.echo(f"Avg completion time: {stats['avg_duration_hours']} hours")
+    click.echo(f"Overdue tasks: {stats['overdue']}")
+    click.echo("")
+    click.echo("By status:")
+    for status, count in sorted(stats['by_status'].items()):
+        click.echo(f"  {status}: {count}")
 
 
 @cli.command()

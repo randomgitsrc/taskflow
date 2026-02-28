@@ -4,7 +4,6 @@ import os
 import sqlite3
 from datetime import datetime
 from enum import Enum
-from __future__ import annotations
 from typing import Optional, List, Dict, Any, Union
 
 # Sentinel for distinguishing "not filtering" vs "filter by None"
@@ -76,6 +75,9 @@ class Database:
                 external_type TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                due_date TIMESTAMP,
+                started_at TIMESTAMP,
                 FOREIGN KEY (parent_id) REFERENCES tasks (id) ON DELETE CASCADE
             )
         """)
@@ -106,6 +108,29 @@ class Database:
         conn.commit()
         self.close()
 
+    def migrate_db(self):
+        """Migrate database to add new columns if they don't exist."""
+        conn = self.connect()
+        cursor = conn.cursor()
+
+        # Get existing columns
+        cursor.execute("PRAGMA table_info(tasks)")
+        existing_columns = {row['name'] for row in cursor.fetchall()}
+
+        # Add new columns if they don't exist
+        new_columns = {
+            'completed_at': 'TIMESTAMP',
+            'due_date': 'TIMESTAMP',
+            'started_at': 'TIMESTAMP'
+        }
+
+        for column, col_type in new_columns.items():
+            if column not in existing_columns:
+                cursor.execute(f"ALTER TABLE tasks ADD COLUMN {column} {col_type}")
+                conn.commit()
+
+        self.close()
+
     def _get_conn(self) -> sqlite3.Connection:
         """Get or create database connection."""
         if self.conn is None:
@@ -119,7 +144,8 @@ class Database:
         parent_id: Optional[int] = None,
         owner: Optional[str] = None,
         external_id: Optional[str] = None,
-        external_type: Optional[str] = None
+        external_type: Optional[str] = None,
+        due_date: Optional[str] = None
     ) -> int:
         """Create a new task and return its ID."""
         conn = self._get_conn()
@@ -127,9 +153,9 @@ class Database:
         now = datetime.now().isoformat()
 
         cursor.execute("""
-            INSERT INTO tasks (title, description, status, parent_id, owner, external_id, external_type, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (title, description, TaskStatus.PENDING.value, parent_id, owner, external_id, external_type, now, now))
+            INSERT INTO tasks (title, description, status, parent_id, owner, external_id, external_type, created_at, updated_at, due_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (title, description, TaskStatus.PENDING.value, parent_id, owner, external_id, external_type, now, now, due_date))
 
         conn.commit()
         return cursor.lastrowid
@@ -174,11 +200,11 @@ class Database:
         return [dict(row) for row in cursor.fetchall()]
 
     def update_task_status(self, task_id: int, new_status: TaskStatus) -> bool:
-        """Update task status."""
+        """Update task status with automatic timestamp handling."""
         conn = self._get_conn()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT status FROM tasks WHERE id = ?", (task_id,))
+        cursor.execute("SELECT status, started_at FROM tasks WHERE id = ?", (task_id,))
         row = cursor.fetchone()
         if not row:
             return False
@@ -188,9 +214,26 @@ class Database:
             return False
 
         now = datetime.now().isoformat()
+
+        # Build update fields based on status transition
+        update_fields = ["status = ?", "updated_at = ?"]
+        params = [new_status.value, now]
+
+        # Set started_at when transitioning from pending to in_progress
+        if current_status == TaskStatus.PENDING and new_status == TaskStatus.IN_PROGRESS:
+            update_fields.append("started_at = ?")
+            params.append(now)
+
+        # Set completed_at when completing a task
+        if new_status == TaskStatus.COMPLETED:
+            update_fields.append("completed_at = ?")
+            params.append(now)
+
+        params.append(task_id)
+
         cursor.execute(
-            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-            (new_status.value, now, task_id)
+            f"UPDATE tasks SET {', '.join(update_fields)} WHERE id = ?",
+            tuple(params)
         )
         conn.commit()
         return True
@@ -295,6 +338,86 @@ class Database:
         """, (task_id, task_id))
 
         return [dict(row) for row in cursor.fetchall()]
+
+    def get_overdue_tasks(self) -> List[Dict[str, Any]]:
+        """Get all overdue tasks (due_date < now and not completed/cancelled)."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+
+        cursor.execute("""
+            SELECT * FROM tasks
+            WHERE due_date IS NOT NULL
+            AND due_date < ?
+            AND status NOT IN ('completed', 'cancelled')
+            ORDER BY due_date ASC
+        """, (now,))
+
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get task statistics."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+
+        # Basic counts by status
+        cursor.execute("""
+            SELECT status, COUNT(*) as count FROM tasks GROUP BY status
+        """)
+        status_counts = {row['status']: row['count'] for row in cursor.fetchall()}
+
+        # Total tasks
+        cursor.execute("SELECT COUNT(*) as total FROM tasks")
+        total = cursor.fetchone()['total']
+
+        # Completed tasks with duration
+        cursor.execute("""
+            SELECT started_at, completed_at, created_at
+            FROM tasks
+            WHERE status = 'completed' AND completed_at IS NOT NULL
+        """)
+        completed_tasks = cursor.fetchall()
+
+        completed_count = len(completed_tasks)
+        completion_rate = (completed_count / total * 100) if total > 0 else 0
+
+        # Calculate average completion time
+        total_duration = 0
+        valid_durations = 0
+        for task in completed_tasks:
+            if task['started_at']:
+                start = datetime.fromisoformat(task['started_at'])
+                end = datetime.fromisoformat(task['completed_at'])
+                total_duration += (end - start).total_seconds()
+                valid_durations += 1
+            else:
+                # If no started_at, use created_at
+                start = datetime.fromisoformat(task['created_at'])
+                end = datetime.fromisoformat(task['completed_at'])
+                total_duration += (end - start).total_seconds()
+                valid_durations += 1
+
+        avg_duration_seconds = total_duration / valid_durations if valid_durations > 0 else 0
+        avg_duration_hours = avg_duration_seconds / 3600
+
+        # Overdue tasks count
+        now = datetime.now().isoformat()
+        cursor.execute("""
+            SELECT COUNT(*) as overdue_count FROM tasks
+            WHERE due_date IS NOT NULL
+            AND due_date < ?
+            AND status NOT IN ('completed', 'cancelled')
+        """, (now,))
+        overdue_count = cursor.fetchone()['overdue_count']
+
+        return {
+            'total': total,
+            'by_status': status_counts,
+            'completed': completed_count,
+            'completion_rate': round(completion_rate, 1),
+            'avg_duration_hours': round(avg_duration_hours, 1),
+            'overdue': overdue_count
+        }
 
     def get_task_tree(self, parent_id: Optional[int] | _UNSET = UNSET, depth: int = 0) -> List[Dict[str, Any]]:
         """Get task tree structure."""
