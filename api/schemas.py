@@ -1,0 +1,200 @@
+"""Pydantic schemas for TaskFlow API."""
+from datetime import datetime
+from typing import Optional, List
+from pydantic import BaseModel, ConfigDict
+
+
+# Project schemas
+class ProjectBase(BaseModel):
+    """Base project schema."""
+    name: str
+    description: Optional[str] = None
+
+
+class ProjectCreate(ProjectBase):
+    """Schema for creating a project."""
+    pass
+
+
+class ProjectUpdate(BaseModel):
+    """Schema for updating a project."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ProjectResponse(ProjectBase):
+    """Schema for project response."""
+    id: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Base schemas
+class TaskBase(BaseModel):
+    """Base task schema."""
+    title: str
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    project_id: Optional[int] = None
+    priority: Optional[str] = "medium"
+    progress: Optional[int] = 0
+    owner: Optional[str] = None
+    external_id: Optional[str] = None
+    external_type: Optional[str] = None
+    due_date: Optional[datetime] = None
+
+
+class TaskCreate(TaskBase):
+    """Schema for creating a task."""
+    pass
+
+
+class TaskUpdate(BaseModel):
+    """Schema for updating a task."""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    project_id: Optional[int] = None
+    priority: Optional[str] = None
+    progress: Optional[int] = None
+    owner: Optional[str] = None
+    external_id: Optional[str] = None
+    external_type: Optional[str] = None
+    due_date: Optional[datetime] = None
+
+
+class TaskStatusUpdate(BaseModel):
+    """Schema for updating task status."""
+    status: str
+
+
+class TaskResponse(TaskBase):
+    """Schema for task response."""
+    id: int
+    status: str
+    progress: int = 0
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskWithChildren(TaskResponse):
+    """Schema for task with children (tree view)."""
+    children: List["TaskWithChildren"] = []
+
+
+# Log schemas
+class TaskLogBase(BaseModel):
+    """Base log schema."""
+    message: str
+
+
+class TaskLogCreate(TaskLogBase):
+    """Schema for creating a log."""
+    pass
+
+
+class TaskLogResponse(TaskLogBase):
+    """Schema for log response."""
+    id: int
+    task_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Update forward ref
+TaskWithChildren.model_rebuild()
+
+
+# Tag schemas
+class TagBase(BaseModel):
+    """Base tag schema."""
+    name: str
+    color: str = "#999999"
+
+
+class TagCreate(TagBase):
+    """Schema for creating a tag."""
+    pass
+
+
+class TagUpdate(BaseModel):
+    """Schema for updating a tag."""
+    name: Optional[str] = None
+    color: Optional[str] = None
+
+
+class TagResponse(TagBase):
+    """Schema for tag response."""
+    id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Task-Tag schemas
+class TaskTagResponse(BaseModel):
+    """Schema for task-tag response."""
+    task_id: int
+    tag_id: int
+    tag: TagResponse
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Task Link schemas
+class TaskLinkBase(BaseModel):
+    """Base task link schema."""
+    linked_task_id: int
+    link_type: str = "related"
+
+
+class TaskLinkCreate(TaskLinkBase):
+    """Schema for creating a task link."""
+    pass
+
+
+class TaskLinkResponse(TaskLinkBase):
+    """Schema for task link response."""
+    id: int
+    task_id: int
+    linked_task: "TaskResponse"
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+TaskLinkResponse.model_rebuild()
+
+
+# Progress update schema
+class TaskProgressUpdate(BaseModel):
+    """Schema for updating task progress."""
+    progress: int
+
+
+# Comment schemas
+class CommentBase(BaseModel):
+    """Base comment schema."""
+    author: str
+    content: str
+
+
+class CommentCreate(CommentBase):
+    """Schema for creating a comment."""
+    pass
+
+
+class CommentResponse(CommentBase):
+    """Schema for comment response."""
+    id: int
+    task_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

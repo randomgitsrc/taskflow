@@ -1,183 +1,289 @@
-# TaskFlow 技术规格说明书
+# TaskFlow Web 版 Phase 3 规格说明书
 
-> **版本**: 1.1.0
-> **更新**: 2026-03-01
-> **状态**: 已发布
+> **版本**: 3.0.0
+> **阶段**: Phase 3 - 评论功能 + 进度百分比 + 依赖可视化
+> **更新**: 2026-03-03
 
-## 1. 项目概述
+## 1. 概述
 
-- **项目名称**: TaskFlow
-- **项目类型**: CLI 工具
-- **核心功能**: 任务管理 CLI，支持任务树、状态机、任务关联
-- **目标用户**: AI 助手（阿九）和用户（神龙）之间的协作任务管理
+Phase 3 在 Phase 2 基础上增加：
+- 任务评论功能
+- 进度百分比（0-100%）
+- 依赖可视化（阻塞关系在任务树显示）
 
-## 2. 技术栈
+## 2. 概述（Phase 1-2）
 
-| 组件 | 技术 |
-|------|------|
-| 语言 | Python 3.8+ |
-| CLI 框架 | Click |
-| 数据库 | SQLite |
-| 打包 | setuptools |
+Phase 1: 任务 CRUD、状态流转、树形结构、日志
+Phase 2: 父子任务、任务关联、标签、优先级、统计页面
 
-## 3. 功能列表
+## 2. 技术变更
 
-### 3.1 核心功能
+### 2.1 数据库
 
-| 功能 | 说明 |
-|------|------|
-| 任务创建 | 支持标题、描述、负责人、父子层级 |
-| 任务状态 | 8 种状态：pending, in_progress, completed, stopped, paused, waiting, blocked, cancelled |
-| 状态流转 | 状态机控制，允许有限状态转换 |
-| 任务日志 | 记录任务变更历史 |
-| 任务关联 | link/unlink 任务关系 |
-| 任务树 | 树形结构展示任务层级 |
+```sql
+-- 新增 tags 表
+CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    color TEXT DEFAULT '#999999',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-### 3.2 CLI 命令
+-- 新增 task_tags 关联表
+CREATE TABLE IF NOT EXISTS task_tags (
+    task_id INTEGER NOT NULL,
+    tag_id INTEGER NOT NULL,
+    PRIMARY KEY (task_id, tag_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+);
 
-| 命令 | 说明 |
-|------|------|
-| init | 初始化数据库 |
-| add | 添加新任务 |
-| list | 列出任务 |
-| status | 查看任务详情 |
-| done | 完成任务 |
-| pause | 暂停任务 |
-| resume | 恢复任务 |
-| block | 阻塞任务 |
-| cancel | 取消任务 |
-| log | 添加日志 |
-| logs | 查看日志 |
-| tree | 树形视图 |
-| link | 关联任务 |
-| unlink | 解除关联 |
-
-## 4. 数据模型
-
-### 4.1 tasks 表
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | INTEGER | 主键 |
-| title | TEXT | 任务标题 |
-| description | TEXT | 任务描述 |
-| status | TEXT | 状态 |
-| parent_id | INTEGER | 父任务 ID |
-| owner | TEXT | 负责人 |
-| external_id | TEXT | 外部关联 ID |
-| external_type | TEXT | 外部类型 |
-| created_at | TIMESTAMP | 创建时间 |
-| updated_at | TIMESTAMP | 更新时间 |
-
-### 4.2 task_logs 表
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | INTEGER | 主键 |
-| task_id | INTEGER | 任务 ID |
-| message | TEXT | 日志内容 |
-| created_at | TIMESTAMP | 创建时间 |
-
-### 4.3 task_links 表
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | INTEGER | 主键 |
-| task_id | INTEGER | 任务 ID |
-| linked_task_id | INTEGER | 关联任务 ID |
-| link_type | TEXT | 关联类型 |
-| created_at | TIMESTAMP | 创建时间 |
-
-## 5. 状态流转
-
-```
-pending → in_progress → completed
-              ↓
-          stopped
-              ↓
-         cancelled
-
-pending → blocked → cancelled
-pending → cancelled
-
-in_progress → paused → in_progress
-in_progress → waiting → in_progress
+-- tasks 表新增字段
+ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'medium';
+-- priority: low, medium, high
 ```
 
-## 6. 使用示例
+### 2.2 目录结构
+
+```
+api/
+├── main.py           # 新增标签/统计接口
+├── models.py         # 新增 Tag 模型
+├── schemas.py        # 新增 TagSchema
+├── crud.py           # 新增 tag 相关方法
+└── requirements.txt
+
+web/
+├── src/
+│   ├── api/tasks.ts      # 新增 link/tag 接口
+│   ├── views/
+│   │   ├── TaskList.vue      # 标签/优先级筛选
+│   │   ├── TaskTree.vue     # 父子层级展示
+│   │   ├── TaskDetail.vue   # 关联/标签管理
+│   │   └── Stats.vue        # 新增统计页面
+│   └── components/
+│       ├── TaskForm.vue      # 新增父任务选择
+│       ├── TagManager.vue    # 新增标签管理组件
+│       └── LinkManager.vue  # 新增关联管理组件
+└── router.ts          # 新增统计路由
+```
+
+## 3. API 设计
+
+### 3.1 标签接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/tags | 获取所有标签 |
+| POST | /api/tags | 创建标签 |
+| PUT | /api/tags/{id} | 更新标签 |
+| DELETE | /api/tags/{id} | 删除标签 |
+
+### 3.2 任务标签接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/tasks/{id}/tags | 获取任务的所有标签 |
+| POST | /api/tasks/{id}/tags | 为任务添加标签 |
+| DELETE | /api/tasks/{id}/tags/{tag_id} | 删除任务标签 |
+
+### 3.3 任务关联接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/tasks/{id}/links | 获取任务的关联 |
+| POST | /api/tasks/{id}/links | 添加关联 |
+| DELETE | /api/tasks/{id}/links/{linked_id} | 删除关联 |
+
+关联类型：`blocks`（阻塞）、`blocked_by`（被阻塞）、`depends_on`（依赖）、`related`（关联）
+
+### 3.4 统计接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/stats | 获取统计数据 |
+
+返回：
+```json
+{
+  "total": 10,
+  "pending": 3,
+  "in_progress": 2,
+  "completed": 5,
+  "completed_rate": 0.5,
+  "overdue": 1,
+  "avg_duration_hours": 24.5
+}
+```
+
+## 4. 前端页面
+
+### 4.1 任务列表页增强
+
+- 标签筛选下拉
+- 优先级筛选（高/中/低）
+- 任务卡片显示标签 badge
+- 优先级 indicator
+
+### 4.2 任务树增强
+
+- 父子层级树形展示
+- 拖拽调整父子关系（可选）
+- 点击节点显示关联任务
+
+### 4.3 任务详情页增强
+
+- **标签管理**：添加/删除标签
+- **关联管理**：添加前置/依赖/关联任务
+- **优先级选择**：高/中/下拉选择
+
+### 4.4 任务创建/编辑表单增强
+
+- 父任务选择下拉
+- 优先级选择
+- 标签选择（多选）
+
+### 4.5 统计页面
+
+- 总任务数、进行中、已完成
+- 完成率环形图
+- 逾期任务列表
+- 平均耗时
+
+## 5. 交互流程
+
+### 5.1 创建任务时设置父子
+
+```
+1. 点击"新建任务"
+2. 弹出表单
+3. "父任务"下拉选择已有任务
+4. 提交创建
+5. 任务树自动更新
+```
+
+### 5.2 添加任务关联
+
+```
+1. 进入任务详情页
+2. 点击"关联管理"
+3. 选择关联类型（前置/依赖/关联）
+4. 选择关联的任务
+5. 保存
+```
+
+### 5.3 打标签
+
+```
+1. 进入任务详情页
+2. 点击"添加标签"
+3. 选择已有标签或创建新标签
+4. 标签显示在任务卡片上
+```
+
+## 6. 验收标准
+
+### 功能验收
+
+- [x] 能创建带父任务的任务
+- [x] 任务树正确显示父子层级
+- [x] 能添加/删除任务关联（前置/依赖/关联）
+- [x] 能创建/编辑/删除标签
+- [x] 能为任务打标签
+- [x] 能设置任务优先级
+- [x] 任务列表支持标签/优先级筛选
+- [x] 统计页面显示正确数据
+
+### 技术验收
+
+- [x] 数据库迁移成功
+- [x] API 接口正常
+- [x] 前端页面正常加载
+- [x] 前后端联调正常
+
+## 7. 启动方式
+
+与 Phase 1 相同：
 
 ```bash
-# 初始化
-taskflow init
+# 后端
+cd api && source venv/bin/activate && uvicorn main:app --reload
 
-# 添加任务
-taskflow add "完成代码"
-taskflow add "写文档" --parent 1
-
-# 查看
-taskflow list
-taskflow tree
-taskflow status 1
-
-# 操作
-taskflow done 1
-taskflow pause 1
-taskflow resume 1
+# 前端
+cd web && npm run dev
 ```
 
-## 7. 已完成迭代
+## 8. Phase 2 变更总结 (2026-03-03)
 
-### v1.1.0 (2026-03-01)
+### 数据库
+- tasks 表新增 priority 字段
+- 新增 tags 表
+- 新增 task_tags 关联表
+- 新增 task_links 关联表
 
-- [x] 新增字段：`completed_at`, `due_date`, `started_at`
-- [x] 新增命令：`start`, `overdue`, `stats`
-- [x] 自动时间戳：开始/完成任务时自动记录时间
-- [x] 数据库迁移支持
+### 后端 API
+- 标签 CRUD: GET/POST/PUT/DELETE /api/tags
+- 任务标签: GET/POST/DELETE /api/tasks/{id}/tags
+- 任务关联: GET/POST/DELETE /api/tasks/{id}/links
+- 统计: GET /api/stats
 
-## 8. 后续迭代
+### 前端
+- 任务列表：新增优先级、标签筛选，任务创建支持父任务/优先级/标签
+- 任务详情：支持优先级修改、标签管理、关联管理
+- 统计页面：环形图、状态分布、完成率等
 
-- [ ] 支持 JSON/YAML 导入导出
-- [ ] 支持任务标签
-- [ ] 支持任务优先级
-- [ ] 归档已完成任务
+## 9. 后续迭代
+
+- 用户认证
+- 逾期提醒
+- 任务导入/导出
 
 ---
 
-## 8. 迭代计划（v1.1.0）
+# Phase 3: 评论功能 + 进度百分比 + 依赖可视化
 
-### 8.1 新增字段
+## 10. 数据库
 
-| 字段 | 类型 | 说明 |
+```sql
+-- tasks 表新增字段
+ALTER TABLE tasks ADD COLUMN progress INTEGER DEFAULT 0;
+-- progress: 0-100
+
+-- comments 表（新增）
+CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+```
+
+## 11. API 设计
+
+### 评论接口
+
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| completed_at | TIMESTAMP | 任务完成时间 |
-| due_date | TIMESTAMP | 截止日期 |
-| started_at | TIMESTAMP | 开始时间 |
+| GET | /api/tasks/{id}/comments | 获取任务评论 |
+| POST | /api/tasks/{id}/comments | 添加评论 |
+| DELETE | /api/comments/{id} | 删除评论 |
 
-### 8.2 新增命令
+### 进度接口
 
-| 命令 | 说明 |
-|------|------|
-| start | 开始任务（pending → in_progress） |
-| overdue | 列出逾期任务 |
-| stats | 任务统计（完成率、平均耗时） |
-| archive | 归档已完成任务 |
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| PATCH | /api/tasks/{id}/progress | 更新进度 |
 
-### 8.3 统计功能
+## 12. 前端
 
-- 完成率统计
-- 平均任务耗时
-- 逾期任务提醒
+- 任务详情页：评论列表 + 添加评论 + 进度条
+- 任务列表/树：显示进度百分比 + 阻塞关系可视化
 
----
+## 13. 验收标准
 
-## 9. 迭代计划（v1.2.0）
-
-### 9.1 提醒功能
-
-- 任务截止前提醒
-- 定期汇报（每天早上自动汇报进行中的任务）
-
-### 9.2 自动化
-
-- 任务完成时自动记录 completed_at
-- 任务开始时自动记录 started_at
+- [x] 能添加/查看/删除评论
+- [x] 进度显示 0-100%
+- [x] 能修改进度
+- [x] 阻塞关系在任务树可视化
