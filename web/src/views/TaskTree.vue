@@ -64,24 +64,26 @@ const convertToTreeData = (tasks: any[]): any[] => {
     key: task.id,
     label: () => h(NSpace, { align: 'center', size: 'small' }, {
       default: () => [
-        h('span', { style: 'font-weight: 500;' }, task.title),
-        h(NTag, { 
-          type: statusColors[task.status] || 'default', 
-          size: 'tiny' 
+        // Phase 4: Show blocked indicator
+        task.is_blocked ? h(NTag, {
+          type: 'warning',
+          size: 'tiny'
+        }, { default: () => '⛔ 等待父任务' }) : null,
+        h('span', {
+          style: task.is_blocked ? 'font-weight: 500; opacity: 0.6;' : 'font-weight: 500;'
+        }, task.title),
+        h(NTag, {
+          type: statusColors[task.status] || 'default',
+          size: 'tiny'
         }, { default: () => statusLabels[task.status] || task.status }),
         // Progress indicator
-        task.progress > 0 ? h('span', { 
-          style: 'font-size: 11px; color: #666; background: #f5f5f5; padding: 1px 6px; border-radius: 3px;' 
+        task.progress > 0 ? h('span', {
+          style: 'font-size: 11px; color: #666; background: #f5f5f5; padding: 1px 6px; border-radius: 3px;'
         }, `${task.progress}%`) : null,
-        // Blocked indicator (if task blocks other tasks)
-        (task.link_types && task.link_types.includes('blocked_by')) ? h(NTag, { 
-          type: 'error', 
-          size: 'tiny' 
-        }, { default: () => '⛔ 被阻塞' }) : null,
       ]
     }),
-    children: task.children && task.children.length > 0 
-      ? convertToTreeData(task.children) 
+    children: task.children && task.children.length > 0
+      ? convertToTreeData(task.children)
       : undefined,
   }))
 }

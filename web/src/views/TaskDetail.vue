@@ -38,9 +38,14 @@
             <n-tag :type="statusColors[task.status] || 'default'">
               {{ statusLabels[task.status] || task.status }}
             </n-tag>
-            <n-dropdown :options="statusOptions" @select="handleStatusChange">
-              <n-button size="small">更改状态</n-button>
-            </n-dropdown>
+            <n-tooltip :disabled="!task.is_blocked">
+              <template #trigger>
+                <n-dropdown :options="statusOptions" @select="handleStatusChange" :disabled="task.is_blocked">
+                  <n-button size="small" :disabled="task.is_blocked">更改状态</n-button>
+                </n-dropdown>
+              </template>
+              <span v-if="task.is_blocked">等待父任务完成，无法更改状态</span>
+            </n-tooltip>
           </n-space>
 
           <!-- Progress Section -->
@@ -82,23 +87,24 @@
             </n-space>
           </n-space>
 
-          <!-- Links Section -->
+          <!-- Phase 4: Parent-Child Section -->
           <n-space align="center">
-            <span class="label">关联任务:</span>
-            <n-space>
-              <n-tag
-                v-for="link in taskLinks"
-                :key="link.id"
-                type="info"
-                closable
-                @close="handleRemoveLink(link.linked_task_id)"
-              >
-                {{ linkTypes[link.link_type] }}: {{ getLinkedTaskTitle(link.linked_task_id) }}
+            <span class="label">父任务:</span>
+            <template v-if="task.parent_id">
+              <n-tag type="info" closable @close="handleRemoveParent">
+                {{ task.parent_title || `任务 #${task.parent_id}` }}
               </n-tag>
-              <n-button size="small" @click="showLinkModal = true">添加关联</n-button>
-            </n-space>
+            </template>
+            <template v-else>
+              <span style="color: #999;">无</span>
+            </template>
           </n-space>
-          
+
+          <!-- Phase 4: Blocking status -->
+          <n-space v-if="task.is_blocked" align="center">
+            <n-tag type="warning">等待父任务完成</n-tag>
+          </n-space>
+
           <n-space align="center">
             <span class="label">创建时间:</span>
             <span>{{ formatDate(task.created_at) }}</span>
@@ -235,24 +241,6 @@
         </n-space>
       </n-modal>
 
-      <!-- Link Modal -->
-      <n-modal v-model:show="showLinkModal" preset="card" title="添加任务关联" style="width: 400px;">
-        <n-form>
-          <n-form-item label="关联类型">
-            <n-select v-model:value="newLink.link_type" :options="linkTypeOptions" />
-          </n-form-item>
-          <n-form-item label="关联任务">
-            <n-select v-model:value="newLink.linked_task_id" :options="linkableTaskOptions" filterable />
-          </n-form-item>
-        </n-form>
-        <template #footer>
-          <n-space justify="end">
-            <n-button @click="showLinkModal = false">取消</n-button>
-            <n-button type="primary" @click="handleAddLink" :loading="addingLink">添加</n-button>
-          </n-space>
-        </template>
-      </n-modal>
-
       <!-- Progress Update Modal -->
       <n-modal v-model:show="showProgressModal" preset="card" title="更新进度" style="width: 400px;">
         <n-form>
@@ -277,12 +265,12 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { 
+import {
   NButton, NCard, NSpace, NTag, NTimeline, NTimelineItem,
   NEmpty, NModal, NForm, NFormItem, NInput, NDropdown, useMessage,
-  NSelect, NColorPicker, NCheckbox, NCheckboxGroup, NProgress, NSlider
+  NSelect, NColorPicker, NCheckbox, NCheckboxGroup, NProgress, NSlider, NTooltip
 } from 'naive-ui'
-import { taskApi, tagApi, linkApi, Task, TaskLog, Tag, TaskLink, Comment } from '../api/tasks'
+import { taskApi, tagApi, Task, TaskLog, Tag, Comment } from '../api/tasks'
 
 const route = useRoute()
 const router = useRouter()
@@ -292,7 +280,6 @@ const task = ref<Task | null>(null)
 const logs = ref<TaskLog[]>([])
 const tags = ref<Tag[]>([])
 const taskTags = ref<Tag[]>([])
-const taskLinks = ref<TaskLink[]>([])
 const allTasks = ref<Task[]>([])
 const comments = ref<Comment[]>([])
 const loading = ref(false)
@@ -300,7 +287,6 @@ const loading = ref(false)
 // Modals
 const showLogModal = ref(false)
 const showTagModal = ref(false)
-const showLinkModal = ref(false)
 const showCreateTag = ref(false)
 const showProgressModal = ref(false)
 const showCommentModal = ref(false)
@@ -312,8 +298,6 @@ const newTag = ref({ name: '', color: '#3b82f6' })
 const creatingTag = ref(false)
 const selectedTags = ref<number[]>([])
 const addingTag = ref(false)
-const newLink = ref({ linked_task_id: 0, link_type: 'related' })
-const addingLink = ref(false)
 const newProgress = ref(0)
 const updatingProgress = ref(false)
 const newComment = ref({ author: '', content: '' })
@@ -354,20 +338,6 @@ const statusOptions = Object.entries(statusLabels).map(([value, label]) => ({
   key: value,
 }))
 
-const linkTypes: Record<string, string> = {
-  blocks: '阻塞',
-  blocked_by: '被阻塞',
-  depends_on: '依赖',
-  related: '关联',
-}
-
-const linkTypeOptions = [
-  { label: '阻塞', value: 'blocks' },
-  { label: '被阻塞', value: 'blocked_by' },
-  { label: '依赖', value: 'depends_on' },
-  { label: '关联', value: 'related' },
-]
-
 const formatDate = (dateStr: string) => {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('zh-CN')
@@ -380,7 +350,6 @@ const loadTask = async () => {
     newProgress.value = task.value.progress
     logs.value = await taskApi.getLogs(taskId.value)
     taskTags.value = await tagApi.getTaskTags(taskId.value)
-    taskLinks.value = await linkApi.getTaskLinks(taskId.value)
     comments.value = await taskApi.getComments(taskId.value)
     allTasks.value = await taskApi.getTasks()
   } catch (e) {
@@ -401,17 +370,6 @@ const loadTags = async () => {
 const availableTags = computed(() => 
   tags.value.filter(t => !taskTags.value.some(tt => tt.id === t.id))
 )
-
-const linkableTaskOptions = computed(() => 
-  allTasks.value
-    .filter(t => t.id !== taskId.value && !taskLinks.value.some(l => l.linked_task_id === t.id))
-    .map(t => ({ label: t.title, value: t.id }))
-)
-
-const getLinkedTaskTitle = (linkedId: number) => {
-  const t = allTasks.value.find(t => t.id === linkedId)
-  return t?.title || `任务 #${linkedId}`
-}
 
 const handleStatusChange = async (status: string) => {
   try {
@@ -503,32 +461,14 @@ const handleRemoveTag = async (tagId: number) => {
   }
 }
 
-const handleAddLink = async () => {
-  if (!newLink.value.linked_task_id) {
-    message.error('请选择关联任务')
-    return
-  }
-  addingLink.value = true
+// Phase 4: Remove parent task
+const handleRemoveParent = async () => {
   try {
-    await linkApi.createTaskLink(taskId.value, newLink.value.linked_task_id, newLink.value.link_type)
-    message.success('关联已添加')
-    showLinkModal.value = false
-    newLink.value = { linked_task_id: 0, link_type: 'related' }
+    await taskApi.updateTask(taskId.value, { parent_id: null })
+    message.success('父任务已移除')
     await loadTask()
   } catch (e) {
-    message.error('添加关联失败')
-  } finally {
-    addingLink.value = false
-  }
-}
-
-const handleRemoveLink = async (linkedTaskId: number) => {
-  try {
-    await linkApi.deleteTaskLink(taskId.value, linkedTaskId)
-    message.success('关联已移除')
-    await loadTask()
-  } catch (e) {
-    message.error('移除关联失败')
+    message.error('移除父任务失败')
   }
 }
 

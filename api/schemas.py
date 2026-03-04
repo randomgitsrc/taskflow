@@ -81,6 +81,8 @@ class TaskResponse(TaskBase):
     completed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    is_blocked: bool = False  # Phase 4: Whether task is blocked by parent
+    parent_title: Optional[str] = None  # Phase 4: Parent task title for display
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -147,30 +149,6 @@ class TaskTagResponse(BaseModel):
     tag: TagResponse
 
     model_config = ConfigDict(from_attributes=True)
-
-
-# Task Link schemas
-class TaskLinkBase(BaseModel):
-    """Base task link schema."""
-    linked_task_id: int
-    link_type: str = "related"
-
-
-class TaskLinkCreate(TaskLinkBase):
-    """Schema for creating a task link."""
-    pass
-
-
-class TaskLinkResponse(TaskLinkBase):
-    """Schema for task link response."""
-    id: int
-    task_id: int
-    linked_task: "TaskResponse"
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-TaskLinkResponse.model_rebuild()
 
 
 # Progress update schema

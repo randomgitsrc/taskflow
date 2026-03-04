@@ -3,6 +3,7 @@ from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from database import get_db, engine, Base
 from models import Task, TaskLog
@@ -16,8 +17,6 @@ from schemas import (
     TagCreate,
     TagUpdate,
     TagResponse,
-    TaskLinkCreate,
-    TaskLinkResponse,
     TaskProgressUpdate,
     CommentCreate,
     CommentResponse,
@@ -29,6 +28,11 @@ import crud
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+
+# Delete deprecated task_links table if exists (Phase 4)
+with engine.connect() as conn:
+    conn.execute(text("DROP TABLE IF EXISTS task_links"))
+    conn.commit()
 
 app = FastAPI(
     title="TaskFlow API",
@@ -54,10 +58,33 @@ def get_tasks(
     status_filter: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """Get all tasks."""
+    """Get all tasks with blocked info."""
     if status_filter:
-        return crud.get_tasks_by_status(db, status_filter)
-    return crud.get_tasks(db, skip=skip, limit=limit)
+        tasks = crud.get_tasks_by_status(db, status_filter)
+        result = []
+        for task in tasks:
+            result.append({
+                "id": task.id,
+                "title": task.title,
+                "description": task.description,
+                "status": task.status,
+                "priority": task.priority,
+                "progress": task.progress,
+                "parent_id": task.parent_id,
+                "project_id": task.project_id,
+                "owner": task.owner,
+                "external_id": task.external_id,
+                "external_type": task.external_type,
+                "due_date": task.due_date,
+                "started_at": task.started_at,
+                "completed_at": task.completed_at,
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+                "is_blocked": crud.get_is_blocked(db, task.id),
+                "parent_title": crud.get_parent_title(db, task.parent_id),
+            })
+        return result
+    return crud.get_tasks_with_blocked_info(db, skip=skip, limit=limit)
 
 
 @app.get("/api/tasks/tree")
@@ -190,30 +217,27 @@ def remove_tag_from_task(task_id: int, tag_id: int, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="Task tag not found")
 
 
-# Task Link endpoints
-@app.get("/api/tasks/{task_id}/links")
-def get_task_links(task_id: int, db: Session = Depends(get_db)):
-    """Get all links for a task."""
-    task = crud.get_task(db, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return crud.get_task_links(db, task_id)
-
-
-@app.post("/api/tasks/{task_id}/links", status_code=status.HTTP_201_CREATED)
-def create_task_link(task_id: int, link: TaskLinkCreate, db: Session = Depends(get_db)):
-    """Create a link between tasks."""
-    result = crud.create_task_link(db, task_id, link)
-    if not result:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return result
-
-
-@app.delete("/api/tasks/{task_id}/links/{linked_task_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_task_link(task_id: int, linked_task_id: int, db: Session = Depends(get_db)):
-    """Delete a link between tasks."""
-    if not crud.delete_task_link(db, task_id, linked_task_id):
-        raise HTTPException(status_code=404, detail="Task link not found")
+# Phase 4: Available parent tasks endpoint
+@app.get("/api/projects/{project_id}/available-parents")
+def get_available_parent_tasks(
+    project_id: int,
+    exclude_task_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Get available tasks that can be set as parent for a new task."""
+    project = crud.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    tasks = crud.get_available_parent_tasks(db, project_id, exclude_task_id)
+    return [
+        {
+            "id": t.id,
+            "title": t.title,
+            "status": t.status,
+            "priority": t.priority,
+        }
+        for t in tasks
+    ]
 
 
 # Stats endpoint

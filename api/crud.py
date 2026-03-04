@@ -4,8 +4,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from models import Task, TaskLog, Tag, TaskTag, TaskLink, Comment, Project
-from schemas import TaskCreate, TaskUpdate, TagCreate, TagUpdate, TaskLinkCreate, CommentCreate, ProjectCreate, ProjectUpdate
+from models import Task, TaskLog, Tag, TaskTag, Comment, Project
+from schemas import TaskCreate, TaskUpdate, TagCreate, TagUpdate, CommentCreate, ProjectCreate, ProjectUpdate
 
 
 # Project CRUD
@@ -79,6 +79,35 @@ def get_tasks(db: Session, skip: int = 0, limit: int = 100) -> List[Task]:
     return db.query(Task).order_by(Task.created_at.desc()).offset(skip).limit(limit).all()
 
 
+def get_tasks_with_blocked_info(db: Session, skip: int = 0, limit: int = 100) -> List[dict]:
+    """Get all tasks with is_blocked and parent_title info."""
+    tasks = db.query(Task).order_by(Task.created_at.desc()).offset(skip).limit(limit).all()
+    result = []
+    for task in tasks:
+        task_dict = {
+            "id": task.id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status,
+            "priority": task.priority,
+            "progress": task.progress,
+            "parent_id": task.parent_id,
+            "project_id": task.project_id,
+            "owner": task.owner,
+            "external_id": task.external_id,
+            "external_type": task.external_type,
+            "due_date": task.due_date,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "is_blocked": get_is_blocked(db, task.id),
+            "parent_title": get_parent_title(db, task.parent_id),
+        }
+        result.append(task_dict)
+    return result
+
+
 def get_tasks_by_status(db: Session, status: str) -> List[Task]:
     """Get tasks by status."""
     return db.query(Task).filter(Task.status == status).order_by(Task.created_at.desc()).all()
@@ -92,7 +121,13 @@ def get_tasks_by_parent(db: Session, parent_id: Optional[int]) -> List[Task]:
 
 
 def create_task(db: Session, task: TaskCreate) -> Task:
-    """Create a new task."""
+    """Create a new task with parent validation."""
+    # Validate parent task if specified
+    if task.parent_id:
+        is_valid, error_msg = validate_parent_task(db, None, task.parent_id, task.project_id)
+        if not is_valid:
+            raise ValueError(error_msg)
+
     db_task = Task(
         title=task.title,
         description=task.description,
@@ -112,15 +147,23 @@ def create_task(db: Session, task: TaskCreate) -> Task:
 
 
 def update_task(db: Session, task_id: int, task: TaskUpdate) -> Optional[Task]:
-    """Update a task."""
+    """Update a task with parent validation."""
     db_task = get_task(db, task_id)
     if not db_task:
         return None
-    
+
+    # Validate parent_id if being updated
+    if task.parent_id is not None and task.parent_id != db_task.parent_id:
+        # Use the new parent_id and the existing or new project_id
+        project_id = task.project_id if task.project_id is not None else db_task.project_id
+        is_valid, error_msg = validate_parent_task(db, task_id, task.parent_id, project_id)
+        if not is_valid:
+            raise ValueError(error_msg)
+
     update_data = task.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(db_task, field, value)
-    
+
     db_task.updated_at = datetime.now()
     db.commit()
     db.refresh(db_task)
@@ -163,13 +206,13 @@ def get_task_tree(db: Session, parent_id: Optional[int] = None) -> List[Task]:
         tasks = db.query(Task).filter(Task.parent_id == None).order_by(Task.created_at.desc()).all()
     else:
         tasks = db.query(Task).filter(Task.parent_id == parent_id).order_by(Task.created_at.desc()).all()
-    
+
     result = []
     for task in tasks:
-        # Get links for blocking visualization
-        links = db.query(TaskLink).filter(TaskLink.task_id == task.id).all()
-        link_types = [link.link_type for link in links]
-        
+        # Get is_blocked status
+        is_blocked = get_is_blocked(db, task.id)
+        parent_title = get_parent_title(db, task.parent_id)
+
         task_dict = {
             "id": task.id,
             "title": task.title,
@@ -178,6 +221,7 @@ def get_task_tree(db: Session, parent_id: Optional[int] = None) -> List[Task]:
             "priority": task.priority,
             "progress": task.progress,
             "parent_id": task.parent_id,
+            "project_id": task.project_id,
             "owner": task.owner,
             "external_id": task.external_id,
             "external_type": task.external_type,
@@ -186,11 +230,12 @@ def get_task_tree(db: Session, parent_id: Optional[int] = None) -> List[Task]:
             "completed_at": task.completed_at,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
-            "link_types": link_types,
+            "is_blocked": is_blocked,
+            "parent_title": parent_title,
             "children": get_task_tree(db, task.id)
         }
         result.append(task_dict)
-    
+
     return result
 
 
@@ -301,50 +346,6 @@ def remove_tag_from_task(db: Session, task_id: int, tag_id: int) -> bool:
     return True
 
 
-# Task Link CRUD
-def get_task_links(db: Session, task_id: int) -> List[TaskLink]:
-    """Get all links for a task."""
-    return db.query(TaskLink).filter(TaskLink.task_id == task_id).all()
-
-
-def create_task_link(db: Session, task_id: int, link: TaskLinkCreate) -> Optional[TaskLink]:
-    """Create a link between tasks."""
-    db_task = get_task(db, task_id)
-    if not db_task:
-        return None
-    
-    db_linked_task = get_task(db, link.linked_task_id)
-    if not db_linked_task:
-        return None
-    
-    # Check if already exists
-    existing = db.query(TaskLink).filter(
-        TaskLink.task_id == task_id,
-        TaskLink.linked_task_id == link.linked_task_id
-    ).first()
-    if existing:
-        return existing
-    
-    db_link = TaskLink(task_id=task_id, linked_task_id=link.linked_task_id, link_type=link.link_type)
-    db.add(db_link)
-    db.commit()
-    db.refresh(db_link)
-    return db_link
-
-
-def delete_task_link(db: Session, task_id: int, linked_task_id: int) -> bool:
-    """Delete a link between tasks."""
-    db_link = db.query(TaskLink).filter(
-        TaskLink.task_id == task_id,
-        TaskLink.linked_task_id == linked_task_id
-    ).first()
-    if not db_link:
-        return False
-    db.delete(db_link)
-    db.commit()
-    return True
-
-
 # Stats
 def get_stats(db: Session) -> dict:
     """Get task statistics."""
@@ -441,3 +442,100 @@ def delete_comment(db: Session, comment_id: int) -> bool:
     db.delete(db_comment)
     db.commit()
     return True
+
+
+# Phase 4: Parent-child task validation and blocking logic
+
+def validate_parent_task(db: Session, task_id: Optional[int], new_parent_id: Optional[int], project_id: Optional[int]) -> tuple[bool, str]:
+    """
+    Validate parent task selection.
+    Returns (is_valid, error_message)
+    """
+    if new_parent_id is None:
+        return True, ""
+
+    # Get parent task
+    parent_task = get_task(db, new_parent_id)
+    if not parent_task:
+        return False, "父任务不存在"
+
+    # Check same project constraint
+    if project_id is not None and parent_task.project_id != project_id:
+        return False, "父任务必须在同一项目内"
+
+    # Check if parent is completed (cannot set as parent if completed)
+    if parent_task.status == "completed":
+        return False, "已完成的任务不能作为父任务"
+
+    # Check circular reference
+    if task_id is not None:
+        if new_parent_id == task_id:
+            return False, "不能将任务设置为自己的父任务"
+
+        # Check if task_id is an ancestor of new_parent_id (would create circular reference)
+        visited = set()
+        current = new_parent_id
+        while current:
+            if current == task_id:
+                return False, "不能设置循环引用"
+            if current in visited:
+                return False, "检测到循环引用"
+            visited.add(current)
+            parent = get_task(db, current)
+            current = parent.parent_id if parent else None
+
+    return True, ""
+
+
+def get_is_blocked(db: Session, task_id: int) -> bool:
+    """
+    Check if a task is blocked by its parent.
+    Task is blocked if:
+    1. Has a parent task
+    2. Parent task status is not 'completed'
+    """
+    task = get_task(db, task_id)
+    if not task or not task.parent_id:
+        return False
+
+    parent = get_task(db, task.parent_id)
+    if not parent:
+        return False
+
+    # Task is blocked if parent is not completed
+    return parent.status != "completed"
+
+
+def get_parent_title(db: Session, parent_id: Optional[int]) -> Optional[str]:
+    """Get parent task title."""
+    if not parent_id:
+        return None
+    parent = get_task(db, parent_id)
+    return parent.title if parent else None
+
+
+def get_available_parent_tasks(db: Session, project_id: int, exclude_task_id: Optional[int] = None) -> List[Task]:
+    """
+    Get available tasks that can be set as parent for a new task.
+    Excludes the task itself and all its descendants.
+    """
+    # Get all tasks in the project
+    tasks = db.query(Task).filter(Task.project_id == project_id).all()
+
+    # If excluding a task, also exclude its descendants
+    exclude_ids = set()
+    if exclude_task_id:
+        exclude_ids.add(exclude_task_id)
+        # BFS to find all descendants
+        queue = [exclude_task_id]
+        while queue:
+            current = queue.pop()
+            children = db.query(Task).filter(Task.parent_id == current).all()
+            for child in children:
+                if child.id not in exclude_ids:
+                    exclude_ids.add(child.id)
+                    queue.append(child.id)
+
+    # Filter out excluded tasks and completed tasks
+    available = [t for t in tasks if t.id not in exclude_ids and t.status != "completed"]
+    return available

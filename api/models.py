@@ -32,7 +32,6 @@ class Task(Base):
     project = relationship("Project", back_populates="tasks")
     logs = relationship("TaskLog", back_populates="task", cascade="all, delete-orphan")
     task_tags = relationship("TaskTag", back_populates="task", cascade="all, delete-orphan")
-    links = relationship("TaskLink", foreign_keys="TaskLink.task_id", back_populates="task", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="task", cascade="all, delete-orphan")
 
 
@@ -49,20 +48,6 @@ class Project(Base):
 
     # Relationships
     tasks = relationship("Task", back_populates="project")
-
-
-class TaskLink(Base):
-    """Task link model for task relationships."""
-    __tablename__ = "task_links"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
-    linked_task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
-    link_type = Column(String(20), nullable=False, default="related")
-    created_at = Column(DateTime, default=datetime.now)
-
-    task = relationship("Task", foreign_keys=[task_id], back_populates="links")
-    linked_task = relationship("Task", foreign_keys=[linked_task_id])
 
 
 class Tag(Base):

@@ -186,6 +186,9 @@ const form = ref<TaskCreate>({
   tag_ids: [],
 })
 
+// Phase 4: Track current project for parent task filtering
+const currentProjectId = ref<number | null>(1)
+
 const editForm = ref<TaskUpdate>({
   title: '',
   description: '',
@@ -257,9 +260,21 @@ const tagOptions = computed(() =>
   tags.value.map(t => ({ label: t.name, value: t.id }))
 )
 
-const parentTaskOptions = computed(() => 
-  tasks.value.map(t => ({ label: t.title, value: t.id }))
-)
+// Phase 4: Parent task options filtered by project
+const parentTaskOptions = computed(() => {
+  // When creating a new task, use the selected project
+  const projectId = form.value.project_id || currentProjectId.value
+  if (!projectId) return []
+
+  // Filter tasks by project and exclude completed tasks
+  const filteredTasks = tasks.value.filter(
+    t => t.project_id === projectId && t.status !== 'completed'
+  )
+  return [
+    { label: '（根任务）', value: null },  // Option to be a root task
+    ...filteredTasks.map(t => ({ label: t.title, value: t.id }))
+  ]
+})
 
 const projectOptions = computed(() => 
   projects.value.map(p => ({ label: p.name, value: p.id }))
@@ -303,9 +318,15 @@ const columns = [
   {
     title: '状态',
     key: 'status',
-    width: 100,
+    width: 120,
     render(row: Task) {
-      return h(NTag, { type: statusColors[row.status] || 'default', size: 'small' }, 
+      // Phase 4: Show blocked badge if task is blocked
+      if (row.is_blocked && row.status === 'pending') {
+        return h('div', { style: 'display: flex; align-items: center; gap: 4px;' }, [
+          h(NTag, { type: 'warning', size: 'small' }, { default: () => '等待父任务' }),
+        ])
+      }
+      return h(NTag, { type: statusColors[row.status] || 'default', size: 'small' },
         { default: () => statusLabels[row.status] || row.status }
       )
     },
@@ -343,24 +364,30 @@ const columns = [
   {
     title: '操作',
     key: 'actions',
-    width: 260,
+    width: 280,
     render(row: Task) {
+      // Phase 4: Disable status change if blocked by parent
+      const isBlocked = row.is_blocked && row.status === 'pending'
+      const disabled = isBlocked
+
       return h('div', { style: 'display: flex; gap: 4px; flex-wrap: nowrap; align-items: center;' }, [
-        h(NButton, { 
-          size: 'small', 
-          onClick: () => openEditModal(row) 
+        h(NButton, {
+          size: 'small',
+          onClick: () => openEditModal(row)
         }, { default: () => '编辑' }),
         h(NSelect, {
           size: 'small',
           options: statusOptions,
           value: row.status,
           style: 'width: 90px',
+          disabled: disabled,
+          disabledTip: isBlocked ? '等待父任务完成' : undefined,
           onUpdateValue: (status: string) => handleStatusChange(row, status)
         }),
-        h(NButton, { 
-          size: 'small', 
+        h(NButton, {
+          size: 'small',
           type: 'error',
-          onClick: () => handleDelete(row.id) 
+          onClick: () => handleDelete(row.id)
         }, { default: () => '删除' }),
       ])
     },

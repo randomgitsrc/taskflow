@@ -23,6 +23,9 @@ export interface Task {
   completed_at: string | null
   created_at: string
   updated_at: string
+  // Phase 4: blocking info
+  is_blocked: boolean
+  parent_title: string | null
 }
 
 export interface TaskCreate {
@@ -62,14 +65,6 @@ export interface Tag {
   id: number
   name: string
   color: string
-}
-
-// Task Link types
-export interface TaskLink {
-  id: number
-  task_id: number
-  linked_task_id: number
-  link_type: string
 }
 
 // Stats types
@@ -158,18 +153,6 @@ export const tagApi = {
     api.delete(`/tasks/${taskId}/tags/${tagId}`),
 }
 
-// Task Link API
-export const linkApi = {
-  getTaskLinks: (taskId: number) =>
-    api.get<TaskLink[]>(`/tasks/${taskId}/links`).then(r => r.data),
-  
-  createTaskLink: (taskId: number, linkedTaskId: number, linkType: string) =>
-    api.post<TaskLink>(`/tasks/${taskId}/links`, { linked_task_id: linkedTaskId, link_type: linkType }).then(r => r.data),
-  
-  deleteTaskLink: (taskId: number, linkedTaskId: number) =>
-    api.delete(`/tasks/${taskId}/links/${linkedTaskId}`),
-}
-
 // Stats API
 export const statsApi = {
   getStats: () =>
@@ -216,6 +199,15 @@ export const projectApi = {
   
   getProjectTasks: (projectId: number) =>
     api.get<Task[]>(`/projects/${projectId}/tasks`).then(r => r.data),
+
+  // Phase 4: Get available parent tasks
+  getAvailableParentTasks: (projectId: number, excludeTaskId?: number) => {
+    const params = excludeTaskId ? { exclude_task_id: excludeTaskId } : {}
+    return api.get<{id: number; title: string; status: string; priority: string}[]>(
+      `/projects/${projectId}/available-parents`,
+      { params }
+    ).then(r => r.data)
+  },
 }
 
 export default api
