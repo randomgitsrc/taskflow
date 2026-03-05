@@ -17,7 +17,7 @@
             <span class="label">ID:</span>
             <span>{{ task.id }}</span>
           </n-space>
-          
+
           <n-space align="center">
             <span class="label">标题:</span>
             <span class="value">{{ task.title }}</span>
@@ -32,7 +32,7 @@
               @update:value="handlePriorityChange"
             />
           </n-space>
-          
+
           <n-space align="center">
             <span class="label">状态:</span>
             <n-tag :type="statusColors[task.status] || 'default'">
@@ -44,7 +44,7 @@
                   <n-button size="small" :disabled="task.is_blocked">更改状态</n-button>
                 </n-dropdown>
               </template>
-              <span v-if="task.is_blocked">等待父任务完成，无法更改状态</span>
+              <span v-if="task.is_blocked">等待前置任务完成，无法更改状态</span>
             </n-tooltip>
           </n-space>
 
@@ -59,12 +59,12 @@
             />
             <n-button size="small" @click="showProgressModal = true">更新进度</n-button>
           </n-space>
-          
+
           <n-space align="center">
             <span class="label">负责人:</span>
             <span>{{ task.owner || '-' }}</span>
           </n-space>
-          
+
           <n-space align="center">
             <span class="label">描述:</span>
             <span>{{ task.description || '-' }}</span>
@@ -105,28 +105,76 @@
 
           <!-- Phase 4: Blocking status -->
           <n-space v-if="task.is_blocked" align="center">
-            <n-tag type="warning">等待父任务完成</n-tag>
+            <n-tag type="warning">等待前置任务完成</n-tag>
           </n-space>
 
           <n-space align="center">
             <span class="label">创建时间:</span>
             <span>{{ formatDate(task.created_at) }}</span>
           </n-space>
-          
+
           <n-space align="center">
             <span class="label">更新时间:</span>
             <span>{{ formatDate(task.updated_at) }}</span>
           </n-space>
-          
+
           <n-space align="center" v-if="task.started_at">
             <span class="label">开始时间:</span>
             <span>{{ formatDate(task.started_at) }}</span>
           </n-space>
-          
+
           <n-space align="center" v-if="task.completed_at">
             <span class="label">完成时间:</span>
             <span>{{ formatDate(task.completed_at) }}</span>
           </n-space>
+        </n-space>
+      </n-card>
+
+      <!-- Phase 5: Dependencies Section -->
+      <n-card title="依赖关系" style="margin-top: 16px;">
+        <n-space vertical :size="12">
+          <!-- 前置任务列表 -->
+          <div>
+            <n-space align="center" style="margin-bottom: 8px;">
+              <n-text strong>🔗 我依赖的前置任务</n-text>
+            </n-space>
+            <n-space vertical v-if="dependencies.length > 0">
+              <n-space v-for="dep in dependencies" :key="dep.id" align="center">
+                <n-tag :type="dep.depends_on_status === 'completed' ? 'success' : 'warning'" closable @close="handleRemoveDependency(dep.depends_on_id)">
+                  <span style="cursor: pointer;" @click="goToTask(dep.depends_on_id)">
+                    {{ dep.depends_on_title || `任务 #${dep.depends_on_id}` }}
+                  </span>
+                  <n-tag v-if="dep.depends_on_status" :type="getStatusType(dep.depends_on_status)" size="small" style="margin-left: 4px;">
+                    {{ getStatusText(dep.depends_on_status) }}
+                  </n-tag>
+                </n-tag>
+              </n-space>
+            </n-space>
+            <n-text v-else depth="3">暂无前置任务</n-text>
+            <n-button size="small" @click="showAddDependencyModal = true" style="margin-top: 8px;">+ 添加前置任务</n-button>
+          </div>
+
+          <n-divider />
+
+          <!-- 被依赖者列表 -->
+          <div>
+            <n-space align="center" style="margin-bottom: 8px;">
+              <n-text strong>🔗 依赖我的任务（被阻塞者）</n-text>
+            </n-space>
+            <n-space vertical v-if="dependents.length > 0">
+              <n-space v-for="dep in dependents" :key="dep.id" align="center">
+                <n-tag type="info">
+                  <span style="cursor: pointer;" @click="goToTask(dep.task_id)">
+                    {{ dep.task_title || `任务 #${dep.task_id}` }}
+                  </span>
+                  <n-tag v-if="dep.task_status" :type="getStatusType(dep.task_status)" size="small" style="margin-left: 4px;">
+                    {{ getStatusText(dep.task_status) }}
+                  </n-tag>
+                </n-tag>
+              </n-space>
+            </n-space>
+            <n-text v-else depth="3">暂无依赖此任务的任务</n-text>
+          </div>
         </n-space>
       </n-card>
 
@@ -221,7 +269,7 @@
               {{ showCreateTag ? '选择已有标签' : '创建新标签' }}
             </n-button>
           </n-space>
-          
+
           <template v-if="showCreateTag">
             <n-form>
               <n-form-item label="标签名称">
@@ -259,6 +307,26 @@
           </n-space>
         </template>
       </n-modal>
+
+      <!-- Add Dependency Modal -->
+      <n-modal v-model:show="showAddDependencyModal" preset="card" title="添加前置任务" style="width: 400px;">
+        <n-space vertical>
+          <n-text depth="3">选择同一项目内的任务作为前置任务</n-text>
+          <n-select
+            v-model:value="selectedDependencyId"
+            :options="availableDependencyOptions"
+            placeholder="选择前置任务"
+            clearable
+            style="width: 100%; margin-top: 12px;"
+          />
+        </n-space>
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="showAddDependencyModal = false">取消</n-button>
+            <n-button type="primary" @click="handleAddDependency" :loading="addingDependency" :disabled="!selectedDependencyId">确认添加</n-button>
+          </n-space>
+        </template>
+      </n-modal>
     </template>
 
     <n-empty v-else description="任务不存在" />
@@ -266,13 +334,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NButton, NCard, NSpace, NTag, NTimeline, NTimelineItem,
   NEmpty, NModal, NForm, NFormItem, NInput, NDropdown, useMessage,
-  NSelect, NColorPicker, NCheckbox, NCheckboxGroup, NProgress, NSlider, NTooltip
+  NSelect, NColorPicker, NCheckbox, NCheckboxGroup, NProgress, NSlider, NTooltip,
+  NText, NDivider
 } from 'naive-ui'
+import axios from 'axios'
 import { taskApi, tagApi, Task, TaskLog, Tag, Comment } from '../api/tasks'
 
 const route = useRoute()
@@ -283,9 +353,17 @@ const task = ref<Task | null>(null)
 const logs = ref<TaskLog[]>([])
 const tags = ref<Tag[]>([])
 const taskTags = ref<Tag[]>([])
-const allTasks = ref<Task[]>([])
 const comments = ref<Comment[]>([])
 const loading = ref(false)
+
+// Phase 5: Dependencies
+const dependencies = ref<any[]>([])
+const dependents = ref<any[]>([])
+const showAddDependencyModal = ref(false)
+const selectedDependencyId = ref<number | null>(null)
+const addingDependency = ref(false)
+const availableDependencies = ref<any[]>([])
+const loadingAvailableDependencies = ref(false)
 
 // Modals
 const showLogModal = ref(false)
@@ -349,6 +427,39 @@ const statusOptions = Object.entries(statusLabels).map(([value, label]) => ({
   key: value,
 }))
 
+// Phase 5: Available dependency options
+const availableDependencyOptions = computed(() => {
+  return availableDependencies.value.map(t => ({
+    label: `${t.title} (${statusLabels[t.status] || t.status})`,
+    value: t.id
+  }))
+})
+
+const loadAvailableDependencies = async () => {
+  if (!task.value?.project_id) return
+  loadingAvailableDependencies.value = true
+  try {
+    console.log('loadAvailableDependencies called', task.value.project_id, taskId.value)
+    const response = await axios.get(`/api/projects/${task.value.project_id}/available-dependencies`, {
+      params: { exclude_task_id: taskId.value }
+    })
+    console.log('API response:', response.data)
+    availableDependencies.value = response.data
+    console.log('availableDependencies set:', availableDependencies.value)
+  } catch (e) {
+    console.error('加载可选前置任务失败', e)
+  } finally {
+    loadingAvailableDependencies.value = false
+  }
+}
+
+// Watch for modal open
+watch(showAddDependencyModal, (newVal) => {
+  if (newVal) {
+    loadAvailableDependencies()
+  }
+})
+
 const formatDate = (dateStr: string) => {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('zh-CN')
@@ -380,7 +491,10 @@ const loadTask = async () => {
     logs.value = await taskApi.getLogs(taskId.value)
     taskTags.value = await tagApi.getTaskTags(taskId.value)
     comments.value = await taskApi.getComments(taskId.value)
-    allTasks.value = await taskApi.getTasks()
+
+    // Phase 5: Load dependencies
+    dependencies.value = await taskApi.getDependencies(taskId.value)
+    dependents.value = await taskApi.getDependents(taskId.value)
   } catch (e) {
     message.error('加载任务失败')
   } finally {
@@ -396,7 +510,7 @@ const loadTags = async () => {
   }
 }
 
-const availableTags = computed(() => 
+const availableTags = computed(() =>
   tags.value.filter(t => !taskTags.value.some(tt => tt.id === t.id))
 )
 
@@ -542,6 +656,40 @@ const handleDeleteComment = async (commentId: number) => {
   } catch (e) {
     message.error('删除评论失败')
   }
+}
+
+// Phase 5: Dependency handlers
+const handleAddDependency = async () => {
+  if (!selectedDependencyId.value) {
+    message.error('请选择前置任务')
+    return
+  }
+  addingDependency.value = true
+  try {
+    await taskApi.addDependency(taskId.value, selectedDependencyId.value)
+    message.success('前置任务已添加')
+    showAddDependencyModal.value = false
+    selectedDependencyId.value = null
+    await loadTask()
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '添加前置任务失败')
+  } finally {
+    addingDependency.value = false
+  }
+}
+
+const handleRemoveDependency = async (dependsOnId: number) => {
+  try {
+    await taskApi.removeDependency(taskId.value, dependsOnId)
+    message.success('前置任务已移除')
+    await loadTask()
+  } catch (e) {
+    message.error('移除前置任务失败')
+  }
+}
+
+const goToTask = (id: number) => {
+  router.push({ name: 'detail', params: { id } })
 }
 
 onMounted(() => {

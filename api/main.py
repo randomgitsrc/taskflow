@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, text
 
 from database import get_db, engine, Base
-from models import Task, TaskLog
+from models import Task, TaskLog, TaskDependency
 from schemas import (
     TaskCreate,
     TaskUpdate,
@@ -23,6 +23,8 @@ from schemas import (
     ProjectCreate,
     ProjectUpdate,
     ProjectResponse,
+    TaskDependencyCreate,
+    BatchSetDependenciesRequest,
 )
 import crud
 
@@ -448,3 +450,118 @@ def get_project_tasks(project_id: int, db: Session = Depends(get_db)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return crud.get_project_tasks(db, project_id)
+
+
+# Phase 5: Task Dependencies endpoints
+
+@app.get("/api/tasks/{task_id}/dependencies")
+def get_task_dependencies(task_id: int, db: Session = Depends(get_db)):
+    """Get all dependencies (前置任务) for a task."""
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    dependencies = crud.get_task_dependencies(db, task_id)
+    result = []
+    for dep in dependencies:
+        dep_task = crud.get_task(db, dep.depends_on_id)
+        if dep_task:
+            result.append({
+                "id": dep.id,
+                "task_id": dep.task_id,
+                "depends_on_id": dep.depends_on_id,
+                "dependency_type": dep.dependency_type,
+                "created_at": dep.created_at,
+                "depends_on_title": dep_task.title,
+                "depends_on_status": dep_task.status,
+            })
+    return result
+
+
+@app.get("/api/tasks/{task_id}/dependents")
+def get_task_dependents(task_id: int, db: Session = Depends(get_db)):
+    """Get all dependent tasks (谁依赖了我)."""
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    dependents = crud.get_task_dependents(db, task_id)
+    result = []
+    for dep in dependents:
+        dep_task = crud.get_task(db, dep.task_id)
+        if dep_task:
+            result.append({
+                "id": dep.id,
+                "task_id": dep.task_id,
+                "depends_on_id": dep.depends_on_id,
+                "dependency_type": dep.dependency_type,
+                "created_at": dep.created_at,
+                "task_title": dep_task.title,
+                "task_status": dep_task.status,
+            })
+    return result
+
+
+@app.post("/api/tasks/{task_id}/dependencies", status_code=status.HTTP_201_CREATED)
+def add_task_dependency(task_id: int, dependency: TaskDependencyCreate, db: Session = Depends(get_db)):
+    """Add a dependency to a task."""
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    try:
+        result = crud.add_task_dependency(db, task_id, dependency.depends_on_id, dependency.dependency_type)
+        if not result:
+            raise HTTPException(status_code=404, detail="Dependency task not found")
+        return {"status": "added", "id": result.id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/tasks/{task_id}/dependencies/{depends_on_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_task_dependency(task_id: int, depends_on_id: int, db: Session = Depends(get_db)):
+    """Remove a dependency from a task."""
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not crud.remove_task_dependency(db, task_id, depends_on_id):
+        raise HTTPException(status_code=404, detail="Dependency not found")
+
+
+@app.post("/api/tasks/batch-set-dependencies")
+def batch_set_dependencies(request: BatchSetDependenciesRequest, db: Session = Depends(get_db)):
+    """Batch set dependencies for multiple tasks."""
+    return crud.batch_set_dependencies(db, request.task_ids, request.depends_on_id)
+
+
+@app.get("/api/projects/{project_id}/available-dependencies")
+def get_available_dependencies(
+    project_id: int,
+    exclude_task_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Get available tasks that can be set as dependencies."""
+    project = crud.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    tasks = crud.get_available_dependency_tasks(db, project_id, exclude_task_id)
+    return [
+        {
+            "id": t.id,
+            "title": t.title,
+            "status": t.status,
+            "priority": t.priority,
+        }
+        for t in tasks
+    ]
+
+
+@app.get("/api/tasks/{task_id}/block-status")
+def get_block_status(task_id: int, db: Session = Depends(get_db)):
+    """Get the blocking status of a task."""
+    task = crud.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return crud.get_block_status(db, task_id)

@@ -30,6 +30,9 @@
       </n-popselect>
       <n-button @click="loadTasks">刷新</n-button>
       <n-button @click="exportToExcel">导出 Excel</n-button>
+      <n-button v-if="selectedTaskIds.length > 0" type="warning" @click="openBatchSetDialog">
+        批量设置前置任务 ({{ selectedTaskIds.length }})
+      </n-button>
       <n-radio-group v-model:value="viewMode" style="margin-left: auto;">
         <n-radio-button value="list">列表</n-radio-button>
         <n-radio-button value="kanban">看板</n-radio-button>
@@ -83,6 +86,8 @@
       :loading="loading"
       :row-key="(row: Task) => row.id"
       :pagination="false"
+      :row-props="rowProps"
+      v-model:checked-row-keys="selectedTaskIds"
     />
 
     <!-- 树视图 -->
@@ -220,6 +225,27 @@
         </n-space>
       </template>
     </n-modal>
+
+    <!-- Batch Set Dependencies Modal -->
+    <n-modal v-model:show="showBatchSetDialog" preset="card" title="批量设置前置任务" style="width: 400px;">
+      <n-space vertical>
+        <n-text>已选择: {{ selectedTaskIds.length }} 个任务</n-text>
+        <n-text type="secondary" depth="3">选择共同的前置任务（追加模式）</n-text>
+        <n-select
+          v-model:value="selectedDependencyId"
+          :options="batchDependencyOptions"
+          placeholder="选择前置任务"
+          clearable
+          style="width: 100%"
+        />
+      </n-space>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showBatchSetDialog = false">取消</n-button>
+          <n-button type="primary" @click="handleBatchSetDependencies" :loading="batchSetLoading" :disabled="!selectedDependencyId">确认设置</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -229,7 +255,7 @@ import { useRouter, useRoute } from 'vue-router'
 import {
   NButton, NDataTable, NSpace, NModal, NForm, NFormItem,
   NInput, NSelect, NTag, NIcon, NPopselect, NRadioGroup, NRadioButton,
-  NScrollbar, NTree, useMessage
+  NScrollbar, NTree, useMessage, NText
 } from 'naive-ui'
 import { taskApi, tagApi, projectApi, Task, TaskCreate, TaskUpdate, Tag, Project } from '../api/tasks'
 import * as XLSX from 'xlsx'
@@ -250,6 +276,11 @@ const tasks = ref<Task[]>([])
 const tags = ref<Tag[]>([])
 const projects = ref<Project[]>([])
 const loading = ref(false)
+const selectedTaskIds = ref<number[]>([])
+const showBatchSetDialog = ref(false)
+const batchSetLoading = ref(false)
+const availableDependencies = ref<{id: number; title: string; status: string; priority: string}[]>([])
+const selectedDependencyId = ref<number | null>(null)
 const statusFilter = ref<string[]>([])
 const priorityFilter = ref<string[]>([])
 const tagFilter = ref<number[]>([])
@@ -420,7 +451,7 @@ const statusLabels: Record<string, string> = {
 }
 
 // Computed options
-const tagOptions = computed(() => 
+const tagOptions = computed(() =>
   tags.value.map(t => ({ label: t.name, value: t.id }))
 )
 
@@ -462,6 +493,19 @@ const editDependencyTaskOptions = computed(() => {
     .map(t => ({ label: t.title, value: t.id }))
 })
 
+// Batch dependency options
+const batchDependencyOptions = computed(() => {
+  // Get the first selected task's project to filter available dependencies
+  if (selectedTaskIds.value.length === 0) return []
+
+  const firstTask = tasks.value.find(t => t.id === selectedTaskIds.value[0])
+  if (!firstTask?.project_id) return []
+
+  return tasks.value
+    .filter(t => t.project_id === firstTask.project_id)
+    .map(t => ({ label: t.title, value: t.id }))
+})
+
 const projectOptions = computed(() =>
   projects.value.map(p => ({ label: p.name, value: p.id }))
 )
@@ -499,7 +543,16 @@ const applyFilters = () => {
   tasks.value = filtered
 }
 
+const rowProps = (row: Task) => {
+  return {
+    style: 'cursor: pointer',
+  }
+}
+
 const columns = [
+  {
+    type: 'selection',
+  },
   {
     title: 'ID',
     key: 'id',
@@ -529,7 +582,7 @@ const columns = [
     key: 'priority',
     width: 80,
     render(row: Task) {
-      return h(NTag, { type: priorityColors[row.priority] || 'warning', size: 'small' }, 
+      return h(NTag, { type: priorityColors[row.priority] || 'warning', size: 'small' },
         { default: () => priorityLabels[row.priority] || row.priority }
       )
     },
@@ -725,6 +778,36 @@ const handleDelete = async (id: number) => {
     await loadTasks()
   } catch (e) {
     message.error('删除失败')
+  }
+}
+
+// Batch operations
+const openBatchSetDialog = async () => {
+  showBatchSetDialog.value = true
+  selectedDependencyId.value = null
+}
+
+const handleBatchSetDependencies = async () => {
+  if (!selectedDependencyId.value) {
+    message.error('请选择前置任务')
+    return
+  }
+
+  batchSetLoading.value = true
+  try {
+    const result = await taskApi.batchSetDependencies(selectedTaskIds.value, selectedDependencyId.value)
+    if (result.success) {
+      message.success(`成功设置 ${result.updated} 个任务的前置任务`)
+      showBatchSetDialog.value = false
+      selectedTaskIds.value = []
+      await loadTasks()
+    } else {
+      message.error(result.errors.join('; '))
+    }
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '批量设置失败')
+  } finally {
+    batchSetLoading.value = false
   }
 }
 

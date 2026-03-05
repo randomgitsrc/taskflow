@@ -180,3 +180,46 @@ class CommentResponse(CommentBase):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Dependency schemas
+class TaskDependencyResponse(BaseModel):
+    """Schema for task dependency response."""
+    id: int
+    task_id: int
+    depends_on_id: int
+    dependency_type: str
+    created_at: datetime
+
+    # Include task info
+    depends_on_title: Optional[str] = None
+    depends_on_status: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskDependencyCreate(BaseModel):
+    """Schema for creating a task dependency."""
+    depends_on_id: int
+    dependency_type: Optional[str] = "requires"
+
+
+class BatchSetDependenciesRequest(BaseModel):
+    """Schema for batch setting dependencies."""
+    task_ids: List[int]
+    depends_on_id: int
+
+
+class BatchSetDependenciesResponse(BaseModel):
+    """Schema for batch setting dependencies response."""
+    success: bool
+    updated: int
+    errors: List[str]
+
+
+class BlockStatusResponse(BaseModel):
+    """Schema for block status response."""
+    task_id: int
+    is_blocked: bool
+    blocking_tasks: List[dict]
+    all_dependencies_completed: bool

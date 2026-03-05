@@ -133,6 +133,28 @@ export const taskApi = {
   
   deleteComment: (commentId: number) =>
     api.delete(`/comments/${commentId}`),
+
+  // Phase 5: Dependency API
+  getDependencies: (taskId: number) =>
+    api.get<any[]>(`/tasks/${taskId}/dependencies`).then(r => r.data),
+
+  getDependents: (taskId: number) =>
+    api.get<any[]>(`/tasks/${taskId}/dependents`).then(r => r.data),
+
+  addDependency: (taskId: number, dependsOnId: number) =>
+    api.post(`/tasks/${taskId}/dependencies`, { depends_on_id: dependsOnId }),
+
+  removeDependency: (taskId: number, dependsOnId: number) =>
+    api.delete(`/tasks/${taskId}/dependencies/${dependsOnId}`),
+
+  batchSetDependencies: (taskIds: number[], dependsOnId: number) =>
+    api.post<{success: boolean; updated: number; errors: string[]}>('/tasks/batch-set-dependencies', {
+      task_ids: taskIds,
+      depends_on_id: dependsOnId
+    }).then(r => r.data),
+
+  getBlockStatus: (taskId: number) =>
+    api.get<{task_id: number; is_blocked: boolean; blocking_tasks: any[]; all_dependencies_completed: boolean}>(`/tasks/${taskId}/block-status`).then(r => r.data),
 }
 
 // Tag API
@@ -211,6 +233,14 @@ export const projectApi = {
     const params = excludeTaskId ? { exclude_task_id: excludeTaskId } : {}
     return api.get<{id: number; title: string; status: string; priority: string}[]>(
       `/projects/${projectId}/available-parents`,
+      { params }
+    ).then(r => r.data)
+  },
+
+  getAvailableDependencies: (projectId: number, excludeTaskId?: number) => {
+    const params = excludeTaskId ? { exclude_task_id: excludeTaskId } : {}
+    return api.get<{id: number; title: string; status: string; priority: string}[]>(
+      `/projects/${projectId}/available-dependencies`,
       { params }
     ).then(r => r.data)
   },

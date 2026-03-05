@@ -99,3 +99,18 @@ class Comment(Base):
 
     # Relationships
     task = relationship("Task", back_populates="comments")
+
+
+class TaskDependency(Base):
+    """Task dependency model - for managing task dependencies (blocking relationships)."""
+    __tablename__ = "task_dependencies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    depends_on_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    dependency_type = Column(Text, default="requires")
+    created_at = Column(DateTime, default=datetime.now)
+
+    # Relationships
+    task = relationship("Task", foreign_keys=[task_id])
+    depends_on = relationship("Task", foreign_keys=[depends_on_id])

@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 
-from models import Task, TaskLog, Tag, TaskTag, Comment, Project
+from models import Task, TaskLog, Tag, TaskTag, Comment, Project, TaskDependency
 from schemas import TaskCreate, TaskUpdate, TagCreate, TagUpdate, CommentCreate, ProjectCreate, ProjectUpdate
 
 
@@ -643,4 +643,253 @@ def get_available_parent_tasks(db: Session, project_id: int, exclude_task_id: Op
 
     # Filter out excluded tasks and completed tasks
     available = [t for t in tasks if t.id not in exclude_ids and t.status != "completed"]
+    return available
+
+
+# Phase 5: Task Dependencies CRUD
+
+def get_task_dependencies(db: Session, task_id: int) -> List[TaskDependency]:
+    """Get all dependencies (前置任务) for a task."""
+    return db.query(TaskDependency).filter(TaskDependency.task_id == task_id).all()
+
+
+def get_task_dependents(db: Session, task_id: int) -> List[TaskDependency]:
+    """Get all dependent tasks (被依赖者 - tasks that depend on this task)."""
+    return db.query(TaskDependency).filter(TaskDependency.depends_on_id == task_id).all()
+
+
+def add_task_dependency(db: Session, task_id: int, depends_on_id: int, dependency_type: str = "requires") -> Optional[TaskDependency]:
+    """Add a dependency to a task."""
+    # Validate task exists
+    task = get_task(db, task_id)
+    if not task:
+        return None
+
+    # Validate depends_on task exists
+    dep_task = get_task(db, depends_on_id)
+    if not dep_task:
+        return None
+
+    # Check same project constraint
+    if task.project_id and dep_task.project_id and task.project_id != dep_task.project_id:
+        raise ValueError("只能设置同一项目内的任务作为前置任务")
+
+    # Check circular reference
+    if check_circular_dependency(db, task_id, depends_on_id):
+        raise ValueError("检测到循环引用，不能设置依赖关系")
+
+    # Check if dependency already exists
+    existing = db.query(TaskDependency).filter(
+        TaskDependency.task_id == task_id,
+        TaskDependency.depends_on_id == depends_on_id
+    ).first()
+    if existing:
+        return existing
+
+    db_dependency = TaskDependency(
+        task_id=task_id,
+        depends_on_id=depends_on_id,
+        dependency_type=dependency_type
+    )
+    db.add(db_dependency)
+    db.commit()
+    db.refresh(db_dependency)
+
+    # Update task blocking status
+    update_task_blocking_status(db, task_id)
+
+    return db_dependency
+
+
+def remove_task_dependency(db: Session, task_id: int, depends_on_id: int) -> bool:
+    """Remove a dependency from a task."""
+    db_dependency = db.query(TaskDependency).filter(
+        TaskDependency.task_id == task_id,
+        TaskDependency.depends_on_id == depends_on_id
+    ).first()
+
+    if not db_dependency:
+        return False
+
+    db.delete(db_dependency)
+    db.commit()
+
+    # Update task blocking status
+    update_task_blocking_status(db, task_id)
+
+    return True
+
+
+def check_circular_dependency(db: Session, task_id: int, depends_on_id: int) -> bool:
+    """
+    Check if adding a dependency would create a circular reference.
+    A -> B means A depends on B.
+    If B already depends on A (directly or indirectly), it's a circular reference.
+    """
+    # BFS/DFS to check if task_id is reachable from depends_on_id
+    visited = set()
+    queue = [depends_on_id]
+
+    while queue:
+        current = queue.pop(0)
+        if current == task_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+
+        # Get all tasks that current depends on
+        deps = db.query(TaskDependency).filter(TaskDependency.task_id == current).all()
+        for dep in deps:
+            if dep.depends_on_id not in visited:
+                queue.append(dep.depends_on_id)
+
+    return False
+
+
+def update_task_blocking_status(db: Session, task_id: int) -> None:
+    """Update task status based on dependencies. If any dependency is not completed, task becomes blocked."""
+    task = get_task(db, task_id)
+    if not task:
+        return
+
+    dependencies = get_task_dependencies(db, task_id)
+    if not dependencies:
+        # No dependencies - task should not be blocked
+        if task.status == "blocked":
+            task.status = "pending"
+            db.commit()
+        return
+
+    # Check if any dependency is not completed (AND relationship)
+    blocking = False
+    for dep in dependencies:
+        dep_task = get_task(db, dep.depends_on_id)
+        if dep_task and dep_task.status != "completed":
+            blocking = True
+            break
+
+    if blocking and task.status != "blocked":
+        task.status = "blocked"
+        db.commit()
+    elif not blocking and task.status == "blocked":
+        task.status = "pending"
+        db.commit()
+
+
+def get_block_status(db: Session, task_id: int) -> dict:
+    """Get the blocking status of a task."""
+    task = get_task(db, task_id)
+    if not task:
+        return {"task_id": task_id, "is_blocked": False, "blocking_tasks": [], "all_dependencies_completed": True}
+
+    dependencies = get_task_dependencies(db, task_id)
+    blocking_tasks = []
+    all_completed = True
+
+    for dep in dependencies:
+        dep_task = get_task(db, dep.depends_on_id)
+        if dep_task:
+            if dep_task.status != "completed":
+                all_completed = False
+                blocking_tasks.append({
+                    "id": dep_task.id,
+                    "title": dep_task.title,
+                    "status": dep_task.status
+                })
+
+    return {
+        "task_id": task_id,
+        "is_blocked": len(blocking_tasks) > 0,
+        "blocking_tasks": blocking_tasks,
+        "all_dependencies_completed": all_completed
+    }
+
+
+def batch_set_dependencies(db: Session, task_ids: List[int], depends_on_id: int) -> dict:
+    """
+    Batch set dependencies for multiple tasks.
+    Uses append mode - adds the dependency without removing existing ones.
+    Returns dict with success, updated count, and errors.
+    """
+    errors = []
+    updated = 0
+
+    # Validate depends_on task
+    dep_task = get_task(db, depends_on_id)
+    if not dep_task:
+        return {"success": False, "updated": 0, "errors": [f"前置任务 #{depends_on_id} 不存在"]}
+
+    for task_id in task_ids:
+        try:
+            task = get_task(db, task_id)
+            if not task:
+                errors.append(f"任务 #{task_id} 不存在")
+                continue
+
+            # Check same project constraint
+            if task.project_id and dep_task.project_id and task.project_id != dep_task.project_id:
+                errors.append(f"任务 #{task_id} 和前置任务不在同一项目内")
+                continue
+
+            # Check circular dependency
+            if check_circular_dependency(db, task_id, depends_on_id):
+                errors.append(f"任务 #{task_id} 会形成循环引用")
+                continue
+
+            # Check if dependency already exists
+            existing = db.query(TaskDependency).filter(
+                TaskDependency.task_id == task_id,
+                TaskDependency.depends_on_id == depends_on_id
+            ).first()
+
+            if not existing:
+                db_dependency = TaskDependency(
+                    task_id=task_id,
+                    depends_on_id=depends_on_id,
+                    dependency_type="requires"
+                )
+                db.add(db_dependency)
+                updated += 1
+
+            # Update blocking status
+            update_task_blocking_status(db, task_id)
+
+        except ValueError as e:
+            errors.append(f"任务 #{task_id}: {str(e)}")
+        except Exception as e:
+            errors.append(f"任务 #{task_id}: {str(e)}")
+
+    db.commit()
+    return {
+        "success": len(errors) == 0,
+        "updated": updated,
+        "errors": errors
+    }
+
+
+def get_available_dependency_tasks(db: Session, project_id: int, exclude_task_id: Optional[int] = None) -> List[Task]:
+    """
+    Get available tasks that can be set as dependencies for tasks in this project.
+    Excludes the task itself and all its descendants (to avoid circular dependencies).
+    """
+    # Get all tasks in the project
+    tasks = db.query(Task).filter(Task.project_id == project_id).all()
+
+    # If excluding a task, also exclude its descendants
+    exclude_ids = set()
+    if exclude_task_id:
+        exclude_ids.add(exclude_task_id)
+        # BFS to find all descendants
+        queue = [exclude_task_id]
+        while queue:
+            current = queue.pop()
+            children = db.query(Task).filter(Task.parent_id == current).all()
+            for child in children:
+                if child.id not in exclude_ids:
+                    exclude_ids.add(child.id)
+                    queue.append(child.id)
+
+    # Filter out excluded tasks
+    available = [t for t in tasks if t.id not in exclude_ids]
     return available
