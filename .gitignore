@@ -6,4 +6,6 @@ venv/
 *.db
 .env
 dist/
+*.egg-info/
+*.log
 
