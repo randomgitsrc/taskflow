@@ -106,7 +106,12 @@ const deleteProject = async (id: number) => {
     message.success('项目删除成功')
     fetchProjects()
   } catch (e: any) {
-    message.error('删除失败: ' + e.message)
+    // 后端返回的错误信息：如果包含任务则提示具体原因
+    if (e.response?.data?.detail?.includes('task')) {
+      message.error('该项目下存在任务，无法删除')
+    } else {
+      message.error('删除失败: ' + e.message)
+    }
   }
 }
 

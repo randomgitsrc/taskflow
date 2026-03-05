@@ -24,6 +24,7 @@ class Task(Base):
     due_date = Column(DateTime, nullable=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    depends_on = Column(Text, nullable=True)  # JSON format: [1,2,3]
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

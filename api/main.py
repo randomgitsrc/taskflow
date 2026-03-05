@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import or_, text
 
 from database import get_db, engine, Base
 from models import Task, TaskLog
@@ -30,8 +30,14 @@ import crud
 Base.metadata.create_all(bind=engine)
 
 # Delete deprecated task_links table if exists (Phase 4)
+# Add depends_on column if not exists (Dependency Phase 1)
 with engine.connect() as conn:
     conn.execute(text("DROP TABLE IF EXISTS task_links"))
+    # Check if depends_on column exists
+    result = conn.execute(text("PRAGMA table_info(tasks)"))
+    columns = [row[1] for row in result]
+    if "depends_on" not in columns:
+        conn.execute(text("ALTER TABLE tasks ADD COLUMN depends_on TEXT"))
     conn.commit()
 
 app = FastAPI(
@@ -53,12 +59,61 @@ app.add_middleware(
 # Task endpoints
 @app.get("/api/tasks", response_model=List[TaskResponse])
 def get_tasks(
+    q: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
     status_filter: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """Get all tasks with blocked info."""
+    """Get all tasks with blocked info. Supports search via q parameter."""
+    # Search query
+    if q:
+        # Try to convert search term to ID
+        task_id = None
+        try:
+            task_id = int(q)
+        except ValueError:
+            pass
+
+        # Build search conditions
+        search_filter = or_(
+            Task.title.contains(q),
+            Task.description.contains(q)
+        )
+        if task_id is not None:
+            search_filter = or_(
+                Task.id == task_id,
+                Task.title.contains(q),
+                Task.description.contains(q)
+            )
+
+        tasks = db.query(Task).filter(search_filter).order_by(Task.created_at.desc()).all()
+        result = []
+        for task in tasks:
+            result.append({
+                "id": task.id,
+                "title": task.title,
+                "description": task.description,
+                "status": task.status,
+                "priority": task.priority,
+                "progress": task.progress,
+                "parent_id": task.parent_id,
+                "project_id": task.project_id,
+                "owner": task.owner,
+                "external_id": task.external_id,
+                "external_type": task.external_type,
+                "due_date": task.due_date,
+                "started_at": task.started_at,
+                "completed_at": task.completed_at,
+                "depends_on": crud.get_task_depends_on(task),
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+                "is_blocked": crud.get_is_blocked(db, task.id),
+                "parent_title": crud.get_parent_title(db, task.parent_id),
+                "tag_ids": crud.get_task_tag_ids(db, task.id),
+            })
+        return result
+
     if status_filter:
         tasks = crud.get_tasks_by_status(db, status_filter)
         result = []
@@ -78,10 +133,12 @@ def get_tasks(
                 "due_date": task.due_date,
                 "started_at": task.started_at,
                 "completed_at": task.completed_at,
+                "depends_on": crud.get_task_depends_on(task),
                 "created_at": task.created_at,
                 "updated_at": task.updated_at,
                 "is_blocked": crud.get_is_blocked(db, task.id),
                 "parent_title": crud.get_parent_title(db, task.parent_id),
+                "tag_ids": crud.get_task_tag_ids(db, task.id),
             })
         return result
     return crud.get_tasks_with_blocked_info(db, skip=skip, limit=limit)
@@ -96,7 +153,31 @@ def get_task_tree(db: Session = Depends(get_db)):
 @app.post("/api/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     """Create a new task."""
-    return crud.create_task(db, task)
+    created_task = crud.create_task(db, task)
+    # Manually build response to handle depends_on JSON parsing
+    return {
+        "id": created_task.id,
+        "title": created_task.title,
+        "description": created_task.description,
+        "status": created_task.status,
+        "priority": created_task.priority,
+        "progress": created_task.progress,
+        "parent_id": created_task.parent_id,
+        "project_id": created_task.project_id,
+        "owner": created_task.owner,
+        "external_id": created_task.external_id,
+        "external_type": created_task.external_type,
+        "due_date": created_task.due_date,
+        "started_at": created_task.started_at,
+        "completed_at": created_task.completed_at,
+        "depends_on": crud.get_task_depends_on(created_task),
+        "created_at": created_task.created_at,
+        "updated_at": created_task.updated_at,
+        "is_blocked": crud.get_is_blocked(db, created_task.id),
+        "parent_title": crud.get_parent_title(db, created_task.parent_id),
+        "parent_status": crud.get_parent_status(db, created_task.parent_id),
+        "tag_ids": crud.get_task_tag_ids(db, created_task.id),
+    }
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -105,7 +186,31 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
     task = crud.get_task(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+
+    # Manually build response to handle depends_on JSON parsing
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "priority": task.priority,
+        "progress": task.progress,
+        "parent_id": task.parent_id,
+        "project_id": task.project_id,
+        "owner": task.owner,
+        "external_id": task.external_id,
+        "external_type": task.external_type,
+        "due_date": task.due_date,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "depends_on": crud.get_task_depends_on(task),
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "is_blocked": crud.get_is_blocked(db, task.id),
+        "parent_title": crud.get_parent_title(db, task.parent_id),
+        "parent_status": crud.get_parent_status(db, task.parent_id),
+        "tag_ids": crud.get_task_tag_ids(db, task.id),
+    }
 
 
 @app.put("/api/tasks/{task_id}", response_model=TaskResponse)
@@ -325,6 +430,13 @@ def update_project(project_id: int, project: ProjectUpdate, db: Session = Depend
 @app.delete("/api/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(project_id: int, db: Session = Depends(get_db)):
     """Delete a project."""
+    # Check if project has tasks
+    tasks = crud.get_tasks_by_project(db, project_id)
+    if tasks:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete project: it has {len(tasks)} task(s). Please delete or move the tasks first."
+        )
     if not crud.delete_project(db, project_id):
         raise HTTPException(status_code=404, detail="Project not found")
 

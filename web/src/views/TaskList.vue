@@ -8,40 +8,96 @@
     </div>
 
     <n-space style="margin-bottom: 16px;">
-      <n-select
-        v-model:value="statusFilter"
-        :options="statusOptions"
-        placeholder="筛选状态"
-        clearable
-        style="width: 150px"
-        @update:value="loadTasks"
-      />
-      <n-select
-        v-model:value="priorityFilter"
-        :options="priorityOptions"
-        placeholder="筛选优先级"
-        clearable
-        style="width: 150px"
-        @update:value="loadTasks"
-      />
-      <n-select
-        v-model:value="tagFilter"
-        :options="tagOptions"
-        placeholder="筛选标签"
-        clearable
-        style="width: 150px"
-        @update:value="loadTasks"
-      />
+      <n-popselect v-model:value="statusFilter" :options="statusOptions" multiple trigger="click" @update:value="applyFilters">
+        <n-button>
+          筛选状态 {{ statusFilter.length > 0 ? `(${statusFilter.length})` : '' }}
+        </n-button>
+      </n-popselect>
+      <n-popselect v-model:value="priorityFilter" :options="priorityOptions" multiple trigger="click" @update:value="applyFilters">
+        <n-button>
+          筛选优先级 {{ priorityFilter.length > 0 ? `(${priorityFilter.length})` : '' }}
+        </n-button>
+      </n-popselect>
+      <n-popselect v-model:value="tagFilter" :options="tagOptions" multiple trigger="click" @update:value="applyFilters">
+        <n-button>
+          筛选标签 {{ tagFilter.length > 0 ? `(${tagFilter.length})` : '' }}
+        </n-button>
+      </n-popselect>
+      <n-popselect v-model:value="projectFilter" :options="projectFilterOptions" multiple trigger="click" @update:value="applyFilters">
+        <n-button>
+          筛选项目 {{ projectFilter.length > 0 ? `(${projectFilter.length})` : '' }}
+        </n-button>
+      </n-popselect>
       <n-button @click="loadTasks">刷新</n-button>
+      <n-button @click="exportToExcel">导出 Excel</n-button>
+      <n-radio-group v-model:value="viewMode" style="margin-left: auto;">
+        <n-radio-button value="list">列表</n-radio-button>
+        <n-radio-button value="kanban">看板</n-radio-button>
+        <n-radio-button value="tree">树</n-radio-button>
+      </n-radio-group>
     </n-space>
 
+    <!-- 看板视图 -->
+    <div v-if="viewMode === 'kanban'" class="kanban-board">
+      <n-scrollbar x-scrollable>
+        <div class="kanban-columns">
+          <div v-for="col in kanbanColumns" :key="col.status" class="kanban-column">
+            <div class="column-header" :style="{ borderColor: col.color }">
+              <span class="column-title">{{ col.label }}</span>
+              <n-tag :bordered="false" size="small">{{ col.tasks.length }}</n-tag>
+            </div>
+            <draggable
+              v-model="col.tasks"
+              group="tasks"
+              item-key="id"
+              class="column-tasks"
+              :disabled="col.status !== 'blocked'"
+              @change="(evt: any) => onDragEnd(evt, col.status)"
+            >
+              <template #item="{ element }: { element: Task }">
+                <div class="task-card" :class="{ 'is-blocked': element.is_blocked }">
+                  <div class="task-header">
+                    <div class="task-title">{{ element.title }}</div>
+                    <n-tag v-if="element.is_blocked" type="error" size="small" class="block-badge">阻塞</n-tag>
+                  </div>
+                  <n-space size="small">
+                    <n-tag v-if="element.priority === 'high'" type="error" size="small">高</n-tag>
+                    <n-tag v-if="element.priority === 'medium'" type="warning" size="small">中</n-tag>
+                    <n-tag v-if="element.priority === 'low'" type="success" size="small">低</n-tag>
+                    <n-tag v-if="element.project_id" type="info" size="small">{{ getProjectName(element.project_id) }}</n-tag>
+                  </n-space>
+                  <div v-if="element.is_blocked" class="block-hint">等待前置任务完成</div>
+                </div>
+              </template>
+            </draggable>
+          </div>
+        </div>
+      </n-scrollbar>
+    </div>
+
+    <!-- 列表视图 -->
     <n-data-table
+      v-else-if="viewMode === 'list'"
       :columns="columns"
       :data="tasks"
       :loading="loading"
       :row-key="(row: Task) => row.id"
       :pagination="false"
     />
+
+    <!-- 树视图 -->
+    <div v-else class="tree-view">
+      <n-scrollbar style="max-height: 600px;">
+        <n-tree
+          :data="treeData"
+          :default-expand-all="false"
+          :selectable="false"
+          key-field="key"
+          label-field="label"
+          children-field="children"
+        />
+      </n-scrollbar>
+    </div>
 
     <!-- Create Modal -->
     <n-modal v-model:show="showCreateModal" preset="card" title="新建任务" style="width: 500px;">
@@ -87,6 +143,16 @@
             :options="tagOptions"
             multiple
             placeholder="选择标签"
+            style="width: 100%"
+          />
+        </n-form-item>
+        <n-form-item label="前置任务">
+          <n-select
+            v-model:value="form.depends_on"
+            :options="dependencyTaskOptions"
+            multiple
+            placeholder="选择前置任务（可选）"
+            clearable
             style="width: 100%"
           />
         </n-form-item>
@@ -136,6 +202,16 @@
         <n-form-item label="负责人">
           <n-input v-model:value="editForm.owner" />
         </n-form-item>
+        <n-form-item label="前置任务">
+          <n-select
+            v-model:value="editForm.depends_on"
+            :options="editDependencyTaskOptions"
+            multiple
+            placeholder="选择前置任务（可选）"
+            clearable
+            style="width: 100%"
+          />
+        </n-form-item>
       </n-form>
       <template #footer>
         <n-space justify="end">
@@ -148,33 +224,43 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, h, computed } from 'vue'
-import { useRouter } from 'vue-router'
-import { 
-  NButton, NDataTable, NSpace, NModal, NForm, NFormItem, 
-  NInput, NSelect, NTag, NIcon, useMessage 
+import { ref, onMounted, h, computed, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import {
+  NButton, NDataTable, NSpace, NModal, NForm, NFormItem,
+  NInput, NSelect, NTag, NIcon, NPopselect, NRadioGroup, NRadioButton,
+  NScrollbar, NTree, useMessage
 } from 'naive-ui'
 import { taskApi, tagApi, projectApi, Task, TaskCreate, TaskUpdate, Tag, Project } from '../api/tasks'
+import * as XLSX from 'xlsx'
 import {
   CreateOutline,
   TrashOutline,
   EllipsisVerticalOutline,
 } from '@vicons/ionicons5'
+import draggable from 'vuedraggable'
 
 const router = useRouter()
+const route = useRoute()
+
+const searchQuery = computed(() => route.query.q as string | undefined)
 const message = useMessage()
 
 const tasks = ref<Task[]>([])
 const tags = ref<Tag[]>([])
 const projects = ref<Project[]>([])
 const loading = ref(false)
-const statusFilter = ref<string | null>(null)
-const priorityFilter = ref<string | null>(null)
-const tagFilter = ref<number | null>(null)
+const statusFilter = ref<string[]>([])
+const priorityFilter = ref<string[]>([])
+const tagFilter = ref<number[]>([])
+const projectFilter = ref<number[]>([])
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
 const creating = ref(false)
 const updating = ref(false)
+
+// 看板视图
+const viewMode = ref<'list' | 'kanban' | 'tree'>('list')
 
 const form = ref<TaskCreate>({
   title: '',
@@ -184,6 +270,7 @@ const form = ref<TaskCreate>({
   project_id: 1,  // Default to "未分类"
   priority: 'medium',
   tag_ids: [],
+  depends_on: [],
 })
 
 // Phase 4: Track current project for parent task filtering
@@ -196,6 +283,7 @@ const editForm = ref<TaskUpdate>({
   parent_id: null,
   project_id: null,
   priority: 'medium',
+  depends_on: [],
 })
 
 const editingId = ref<number | null>(null)
@@ -231,6 +319,82 @@ const priorityLabels: Record<string, string> = {
   high: '高',
   medium: '中',
   low: '低',
+}
+
+// 看板视图列
+const kanbanColumns = computed(() => {
+  const cols = [
+    { status: 'pending', label: '待处理', color: '#64748b', tasks: [] as Task[] },
+    { status: 'in_progress', label: '进行中', color: '#3b82f6', tasks: [] as Task[] },
+    { status: 'completed', label: '已完成', color: '#22c55e', tasks: [] as Task[] },
+    { status: 'paused', label: '暂停', color: '#f59e0b', tasks: [] as Task[] },
+    { status: 'blocked', label: '阻塞', color: '#ef4444', tasks: [] as Task[] },
+    { status: 'waiting', label: '等待中', color: '#8b5cf6', tasks: [] as Task[] },
+  ]
+  const filtered = tasks.value
+  cols.forEach(col => {
+    col.tasks = filtered.filter(t => t.status === col.status)
+  })
+  return cols
+})
+
+// 树视图数据
+interface TreeNode {
+  key: string
+  label: string
+  children?: TreeNode[]
+}
+
+const treeData = computed(() => {
+  const result: TreeNode[] = []
+
+  // 按项目分组
+  projects.value.forEach(project => {
+    const projectTasks = tasks.value.filter(t => t.project_id === project.id)
+    if (projectTasks.length === 0) return
+
+    // 找出根任务（没有parent_id的）
+    const rootTasks = projectTasks.filter(t => !t.parent_id)
+
+    // 递归构建任务树
+    const buildTaskTree = (taskList: Task[]): TreeNode[] => {
+      return taskList.map(task => {
+        const children = projectTasks.filter(t => t.parent_id === task.id)
+        const node: TreeNode = {
+          key: `task-${task.id}`,
+          label: `${task.title} (${priorityLabels[task.priority] || task.priority})`,
+        }
+        if (children.length > 0) {
+          node.children = buildTaskTree(children)
+        }
+        return node
+      })
+    }
+
+    // 构建项目节点
+    const projectNode: TreeNode = {
+      key: `project-${project.id}`,
+      label: project.name,
+      children: buildTaskTree(rootTasks),
+    }
+
+    result.push(projectNode)
+  })
+
+  return result
+})
+
+const getProjectName = (projectId: number) => {
+  const p = projects.value.find(p => p.id === projectId)
+  return p?.name || '未分类'
+}
+
+const onDragEnd = async (evt: any, newStatus: string) => {
+  if (evt.added) {
+    const task = evt.added.element as Task
+    await taskApi.updateStatus(task.id, newStatus)
+    loadTasks()
+  }
 }
 
 const statusColors: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'error' | 'info'> = {
@@ -276,9 +440,64 @@ const parentTaskOptions = computed(() => {
   ]
 })
 
-const projectOptions = computed(() => 
+// Phase 2: Dependency task options (create modal) - same project, exclude self
+const dependencyTaskOptions = computed(() => {
+  const projectId = form.value.project_id
+  if (!projectId) return []
+
+  // Filter tasks by project (can include completed tasks for dependency)
+  return tasks.value
+    .filter(t => t.project_id === projectId)
+    .map(t => ({ label: t.title, value: t.id }))
+})
+
+// Phase 2: Dependency task options (edit modal) - same project, exclude editing task
+const editDependencyTaskOptions = computed(() => {
+  const projectId = editForm.value.project_id
+  if (!projectId || !editingId.value) return []
+
+  // Filter tasks by project, exclude the current editing task
+  return tasks.value
+    .filter(t => t.project_id === projectId && t.id !== editingId.value)
+    .map(t => ({ label: t.title, value: t.id }))
+})
+
+const projectOptions = computed(() =>
   projects.value.map(p => ({ label: p.name, value: p.id }))
 )
+
+const projectFilterOptions = computed(() =>
+  projects.value.map(p => ({ label: p.name, value: p.id }))
+)
+
+const allTasks = ref<Task[]>([])
+
+const applyFilters = () => {
+  let filtered = [...allTasks.value]
+
+  if (statusFilter.value.length > 0) {
+    filtered = filtered.filter(t => statusFilter.value.includes(t.status))
+  }
+
+  if (priorityFilter.value.length > 0) {
+    filtered = filtered.filter(t => priorityFilter.value.includes(t.priority))
+  }
+
+  if (projectFilter.value.length > 0) {
+    filtered = filtered.filter(t => projectFilter.value.includes(t.project_id))
+  }
+
+  // Tag filtering - check if task has any of the selected tags (via tag_ids if available)
+  if (tagFilter.value.length > 0) {
+    // Tasks have tag_ids property in the response
+    filtered = filtered.filter(t => {
+      const taskTagIds = (t as any).tag_ids || []
+      return tagFilter.value.some(tagId => taskTagIds.includes(tagId))
+    })
+  }
+
+  tasks.value = filtered
+}
 
 const columns = [
   {
@@ -320,10 +539,11 @@ const columns = [
     key: 'status',
     width: 120,
     render(row: Task) {
-      // Phase 4: Show blocked badge if task is blocked
-      if (row.is_blocked && row.status === 'pending') {
+      // Phase 3: Show blocked status if task is blocked by dependency
+      if (row.is_blocked) {
         return h('div', { style: 'display: flex; align-items: center; gap: 4px;' }, [
-          h(NTag, { type: 'warning', size: 'small' }, { default: () => '等待父任务' }),
+          h(NTag, { type: 'error', size: 'small' }, { default: () => '阻塞' }),
+          h('span', { style: 'font-size: 12px; color: #666;' }, '等待前置任务'),
         ])
       }
       return h(NTag, { type: statusColors[row.status] || 'default', size: 'small' },
@@ -334,17 +554,17 @@ const columns = [
   {
     title: '进度',
     key: 'progress',
-    width: 120,
+    width: 110,
     render(row: Task) {
       return h('div', { style: 'display: flex; align-items: center; gap: 8px;' }, [
-        h('div', { 
-          style: 'flex: 1; height: 6px; background: #eee; border-radius: 3px; overflow: hidden;' 
+        h('div', {
+          style: 'width: 80px; height: 6px; background: #eee; border-radius: 3px; overflow: hidden; flex-shrink: 0;'
         }, [
-          h('div', { 
-            style: `width: ${row.progress}%; height: 100%; background: ${row.progress === 100 ? '#18a058' : '#2080f0'}; border-radius: 3px;` 
+          h('div', {
+            style: `width: ${row.progress}%; height: 100%; background: ${row.progress === 100 ? '#18a058' : '#2080f0'}; border-radius: 3px;`
           })
         ]),
-        h('span', { style: 'font-size: 12px; color: #666;' }, `${row.progress}%`)
+        h('span', { style: 'font-size: 12px; color: #666; white-space: nowrap;' }, `${row.progress}%`)
       ])
     },
   },
@@ -397,17 +617,19 @@ const columns = [
 const loadTasks = async () => {
   loading.value = true
   try {
-    tasks.value = await taskApi.getTasks(
-      statusFilter.value || undefined,
-      priorityFilter.value || undefined,
-      tagFilter.value || undefined
-    )
+    allTasks.value = await taskApi.getTasks(searchQuery.value)
+    applyFilters()
   } catch (e) {
     message.error('加载任务失败')
   } finally {
     loading.value = false
   }
 }
+
+// Watch for route query changes (search)
+watch(() => route.query.q, () => {
+  loadTasks()
+})
 
 const loadTags = async () => {
   try {
@@ -431,23 +653,31 @@ const handleCreate = async () => {
     return
   }
   creating.value = true
+  let task = null
   try {
-    const task = await taskApi.createTask(form.value)
-    // Add tags if selected
+    task = await taskApi.createTask(form.value)
+  } catch (e) {
+    message.error('创建失败')
+    creating.value = false
+    return
+  }
+
+  // 任务创建成功，尝试添加标签
+  try {
     if (form.value.tag_ids && form.value.tag_ids.length > 0) {
       for (const tagId of form.value.tag_ids) {
         await tagApi.addTagToTask(task.id, tagId)
       }
     }
     message.success('创建成功')
-    showCreateModal.value = false
-    form.value = { title: '', description: '', owner: '', parent_id: null, project_id: 1, priority: 'medium', tag_ids: [] }
-    await loadTasks()
   } catch (e) {
-    message.error('创建失败')
-  } finally {
-    creating.value = false
+    message.warning('创建成功，但标签添加失败')
   }
+
+  showCreateModal.value = false
+  form.value = { title: '', description: '', owner: '', parent_id: null, project_id: 1, priority: 'medium', tag_ids: [], depends_on: [] }
+  await loadTasks()
+  creating.value = false
 }
 
 const openEditModal = (task: Task) => {
@@ -503,6 +733,50 @@ onMounted(() => {
   loadTags()
   loadProjects()
 })
+
+// 导出 Excel
+const exportToExcel = () => {
+  const data = tasks.value.map(task => {
+    // 项目名称
+    const project = projects.value.find(p => p.id === task.project_id)
+    // 优先级中文
+    const priorityMap: Record<string, string> = { high: '高', medium: '中', low: '低' }
+    // 状态中文
+    const statusMap: Record<string, string> = {
+      pending: '待处理', in_progress: '进行中', completed: '已完成',
+      paused: '暂停', blocked: '阻塞', waiting: '等待中'
+    }
+    // 父任务
+    const parent = tasks.value.find(t => t.id === task.parent_id)
+    // 标签
+    const taskTags = task.tag_ids?.map((tid: number) => {
+      const tag = tags.value.find(t => t.id === tid)
+      return tag?.name || ''
+    }).filter(Boolean).join(',') || '-'
+
+    return {
+      ID: task.id,
+      标题: task.title,
+      项目: project?.name || '未分类',
+      优先级: priorityMap[task.priority] || task.priority,
+      状态: statusMap[task.status] || task.status,
+      进度: `${task.progress}%`,
+      负责人: task.owner || '-',
+      创建时间: task.created_at,
+      父任务: parent?.title || '-',
+      标签: taskTags
+    }
+  })
+
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '任务')
+
+  const now = new Date()
+  const filename = `tasks_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}.xlsx`
+
+  XLSX.writeFile(wb, filename)
+}
 </script>
 
 <style scoped>
@@ -520,5 +794,74 @@ onMounted(() => {
 .header h1 {
   font-size: 24px;
   font-weight: 600;
+}
+
+/* 看板视图样式 */
+.kanban-board {
+  margin-top: 16px;
+}
+
+.kanban-columns {
+  display: flex;
+  gap: 16px;
+  padding: 8px;
+  min-height: 500px;
+}
+
+.kanban-column {
+  min-width: 280px;
+  max-width: 280px;
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.column-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 3px solid;
+}
+
+.column-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1e293b;
+}
+
+.column-tasks {
+  flex: 1;
+  min-height: 100px;
+}
+
+.task-card {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  cursor: grab;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+
+.task-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  transform: translateY(-2px);
+}
+
+.task-card:active {
+  cursor: grabbing;
+}
+
+.task-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1e293b;
+  margin-bottom: 8px;
+  word-break: break-word;
 }
 </style>

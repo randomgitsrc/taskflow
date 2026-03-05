@@ -1,11 +1,54 @@
 """CRUD operations for TaskFlow."""
+import json
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from models import Task, TaskLog, Tag, TaskTag, Comment, Project
 from schemas import TaskCreate, TaskUpdate, TagCreate, TagUpdate, CommentCreate, ProjectCreate, ProjectUpdate
+
+
+# Dependency helpers
+def get_task_depends_on(task: Task) -> Optional[List[int]]:
+    """Parse JSON depends_on field to list of task IDs."""
+    if not task.depends_on:
+        return None
+    try:
+        return json.loads(task.depends_on)
+    except json.JSONDecodeError:
+        return None
+
+
+def set_task_depends_on(task: Task, depends_on: Optional[List[int]]) -> None:
+    """Set depends_on field as JSON string."""
+    if depends_on is None or len(depends_on) == 0:
+        task.depends_on = None
+    else:
+        task.depends_on = json.dumps(depends_on)
+
+
+def get_tasks_by_dependency(db: Session, task_id: int) -> List[Task]:
+    """Get all tasks that depend on the given task ID."""
+    tasks = db.query(Task).all()
+    result = []
+    for task in tasks:
+        depends_on = get_task_depends_on(task)
+        if task_id in depends_on:
+            result.append(task)
+    return result
+
+
+def check_dependencies_completed(db: Session, task: Task) -> bool:
+    """Check if all dependencies of a task are completed."""
+    depends_on = get_task_depends_on(task)
+    if not depends_on:
+        return True
+    for dep_id in depends_on:
+        dep_task = get_task(db, dep_id)
+        if not dep_task or dep_task.status != "completed":
+            return False
+    return True
 
 
 # Project CRUD
@@ -99,10 +142,12 @@ def get_tasks_with_blocked_info(db: Session, skip: int = 0, limit: int = 100) ->
             "due_date": task.due_date,
             "started_at": task.started_at,
             "completed_at": task.completed_at,
+            "depends_on": get_task_depends_on(task),
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "is_blocked": get_is_blocked(db, task.id),
             "parent_title": get_parent_title(db, task.parent_id),
+            "tag_ids": get_task_tag_ids(db, task.id),
         }
         result.append(task_dict)
     return result
@@ -111,6 +156,11 @@ def get_tasks_with_blocked_info(db: Session, skip: int = 0, limit: int = 100) ->
 def get_tasks_by_status(db: Session, status: str) -> List[Task]:
     """Get tasks by status."""
     return db.query(Task).filter(Task.status == status).order_by(Task.created_at.desc()).all()
+
+
+def get_tasks_by_project(db: Session, project_id: int) -> List[Task]:
+    """Get all tasks in a project."""
+    return db.query(Task).filter(Task.project_id == project_id).order_by(Task.created_at.desc()).all()
 
 
 def get_tasks_by_parent(db: Session, parent_id: Optional[int]) -> List[Task]:
@@ -140,6 +190,14 @@ def create_task(db: Session, task: TaskCreate) -> Task:
         due_date=task.due_date,
         status="pending",
     )
+
+    # Set depends_on if provided
+    if task.depends_on is not None:
+        set_task_depends_on(db_task, task.depends_on)
+        # Check if should be blocked
+        if task.depends_on and not check_dependencies_completed(db, db_task):
+            db_task.status = "blocked"
+
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
@@ -161,6 +219,18 @@ def update_task(db: Session, task_id: int, task: TaskUpdate) -> Optional[Task]:
             raise ValueError(error_msg)
 
     update_data = task.model_dump(exclude_unset=True)
+
+    # Handle depends_on separately
+    if "depends_on" in update_data:
+        depends_on = update_data.pop("depends_on")
+        set_task_depends_on(db_task, depends_on)
+        # Check if should be blocked
+        if depends_on and not check_dependencies_completed(db, db_task):
+            db_task.status = "blocked"
+        elif db_task.status == "blocked" and check_dependencies_completed(db, db_task):
+            # Auto-unblock if dependencies are now completed
+            db_task.status = "pending"
+
     for field, value in update_data.items():
         setattr(db_task, field, value)
 
@@ -185,19 +255,35 @@ def update_task_status(db: Session, task_id: int, status: str) -> Optional[Task]
     db_task = get_task(db, task_id)
     if not db_task:
         return None
-    
+
     db_task.status = status
     db_task.updated_at = datetime.now()
-    
+
     # Handle timestamps based on status
     if status == "in_progress" and not db_task.started_at:
         db_task.started_at = datetime.now()
     elif status == "completed":
         db_task.completed_at = datetime.now()
-    
+        # Check for tasks that depend on this one and unblock them
+        unblock_dependent_tasks(db, task_id)
+
     db.commit()
     db.refresh(db_task)
     return db_task
+
+
+def unblock_dependent_tasks(db: Session, completed_task_id: int) -> None:
+    """When a task is completed, unblock tasks that depend on it."""
+    dependent_tasks = get_tasks_by_dependency(db, completed_task_id)
+    for task in dependent_tasks:
+        if task.status == "blocked":
+            # Check if all dependencies are now completed
+            if check_dependencies_completed(db, task):
+                task.status = "pending"
+                db.add(task)
+                # Create log entry
+                create_log(db, task.id, f"前置任务 #{completed_task_id} 已完成，任务自动解除阻塞")
+    db.commit()
 
 
 def get_task_tree(db: Session, parent_id: Optional[int] = None) -> List[Task]:
@@ -228,6 +314,7 @@ def get_task_tree(db: Session, parent_id: Optional[int] = None) -> List[Task]:
             "due_date": task.due_date,
             "started_at": task.started_at,
             "completed_at": task.completed_at,
+            "depends_on": get_task_depends_on(task),
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "is_blocked": is_blocked,
@@ -307,6 +394,11 @@ def delete_tag(db: Session, tag_id: int) -> bool:
 def get_task_tags(db: Session, task_id: int) -> List[Tag]:
     """Get all tags for a task (returns Tag objects with name and color)."""
     return db.query(Tag).join(TaskTag, Tag.id == TaskTag.tag_id).filter(TaskTag.task_id == task_id).all()
+
+
+def get_task_tag_ids(db: Session, task_id: int) -> List[int]:
+    """Get all tag IDs for a task."""
+    return [t.tag_id for t in db.query(TaskTag.tag_id).filter(TaskTag.task_id == task_id).all()]
 
 
 def get_task_tag_names(db: Session, task_id: int) -> List[dict]:
@@ -489,21 +581,26 @@ def validate_parent_task(db: Session, task_id: Optional[int], new_parent_id: Opt
 
 def get_is_blocked(db: Session, task_id: int) -> bool:
     """
-    Check if a task is blocked by its parent.
+    Check if a task is blocked by its dependencies (前置任务).
     Task is blocked if:
-    1. Has a parent task
-    2. Parent task status is not 'completed'
+    1. Has depends_on (前置任务)
+    2. Any dependency is not completed
     """
     task = get_task(db, task_id)
-    if not task or not task.parent_id:
+    if not task:
         return False
 
-    parent = get_task(db, task.parent_id)
-    if not parent:
+    depends = get_task_depends_on(task)
+    if not depends:
         return False
 
-    # Task is blocked if parent is not completed
-    return parent.status != "completed"
+    # Check if any dependency is not completed
+    for dep_id in depends:
+        dep_task = get_task(db, dep_id)
+        if dep_task and dep_task.status != "completed":
+            return True
+
+    return False
 
 
 def get_parent_title(db: Session, parent_id: Optional[int]) -> Optional[str]:
@@ -512,6 +609,14 @@ def get_parent_title(db: Session, parent_id: Optional[int]) -> Optional[str]:
         return None
     parent = get_task(db, parent_id)
     return parent.title if parent else None
+
+
+def get_parent_status(db: Session, parent_id: Optional[int]) -> Optional[str]:
+    """Get parent task status."""
+    if not parent_id:
+        return None
+    parent = get_task(db, parent_id)
+    return parent.status if parent else None
 
 
 def get_available_parent_tasks(db: Session, project_id: int, exclude_task_id: Optional[int] = None) -> List[Task]:

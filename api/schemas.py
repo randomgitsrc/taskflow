@@ -46,6 +46,7 @@ class TaskBase(BaseModel):
     external_id: Optional[str] = None
     external_type: Optional[str] = None
     due_date: Optional[datetime] = None
+    depends_on: Optional[List[int]] = []  # Task dependency IDs
 
 
 class TaskCreate(TaskBase):
@@ -65,6 +66,7 @@ class TaskUpdate(BaseModel):
     external_id: Optional[str] = None
     external_type: Optional[str] = None
     due_date: Optional[datetime] = None
+    depends_on: Optional[List[int]] = None
 
 
 class TaskStatusUpdate(BaseModel):
@@ -83,6 +85,8 @@ class TaskResponse(TaskBase):
     updated_at: datetime
     is_blocked: bool = False  # Phase 4: Whether task is blocked by parent
     parent_title: Optional[str] = None  # Phase 4: Parent task title for display
+    parent_status: Optional[str] = None  # Phase 4: Parent task status for display
+    tag_ids: List[int] = []  # List of tag IDs associated with this task
 
     model_config = ConfigDict(from_attributes=True)
 

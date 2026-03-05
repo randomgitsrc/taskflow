@@ -1,8 +1,8 @@
 <template>
   <div class="task-detail">
     <div class="header">
-      <n-button @click="router.push({ name: 'tasks' })" style="margin-bottom: 16px;">
-        ← 返回列表
+      <n-button @click="goBack" style="margin-bottom: 16px;">
+        ← 返回
       </n-button>
     </div>
 
@@ -93,6 +93,9 @@
             <template v-if="task.parent_id">
               <n-tag type="info" closable @close="handleRemoveParent">
                 {{ task.parent_title || `任务 #${task.parent_id}` }}
+                <n-tag v-if="task.parent_status" :type="getStatusType(task.parent_status)" size="small" style="margin-left: 4px;">
+                  {{ getStatusText(task.parent_status) }}
+                </n-tag>
               </n-tag>
             </template>
             <template v-else>
@@ -303,6 +306,14 @@ const updatingProgress = ref(false)
 const newComment = ref({ author: '', content: '' })
 const addingComment = ref(false)
 
+const goBack = () => {
+  if (window.history.length > 1) {
+    router.back()
+  } else {
+    router.push({ name: 'tasks' })
+  }
+}
+
 const taskId = computed(() => Number(route.params.id))
 
 const statusColors: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'error' | 'info'> = {
@@ -341,6 +352,24 @@ const statusOptions = Object.entries(statusLabels).map(([value, label]) => ({
 const formatDate = (dateStr: string) => {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('zh-CN')
+}
+
+const getStatusType = (status: string) => {
+  const map: Record<string, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
+    pending: 'default',
+    in_progress: 'info',
+    completed: 'success'
+  }
+  return map[status] || 'default'
+}
+
+const getStatusText = (status: string) => {
+  const map: Record<string, string> = {
+    pending: '待处理',
+    in_progress: '进行中',
+    completed: '已完成'
+  }
+  return map[status] || status
 }
 
 const loadTask = async () => {

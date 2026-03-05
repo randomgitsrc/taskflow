@@ -26,6 +26,8 @@ export interface Task {
   // Phase 4: blocking info
   is_blocked: boolean
   parent_title: string | null
+  // Phase 2: dependency info
+  depends_on: number[] | null
 }
 
 export interface TaskCreate {
@@ -39,6 +41,8 @@ export interface TaskCreate {
   external_type?: string
   due_date?: string
   tag_ids?: number[]
+  // Phase 2: dependency
+  depends_on?: number[]
 }
 
 export interface TaskUpdate {
@@ -51,6 +55,8 @@ export interface TaskUpdate {
   external_id?: string
   external_type?: string
   due_date?: string
+  // Phase 2: dependency
+  depends_on?: number[]
 }
 
 export interface TaskLog {
@@ -89,8 +95,8 @@ export interface Comment {
 
 // API functions
 export const taskApi = {
-  getTasks: (status?: string, priority?: string, tagId?: number) => 
-    api.get<Task[]>('/tasks', { params: { status_filter: status, priority, tag_id: tagId } }).then(r => r.data),
+  getTasks: (q?: string, status?: string, priority?: string, tagId?: number) => 
+    api.get<Task[]>('/tasks', { params: { q, status_filter: status, priority, tag_id: tagId } }).then(r => r.data),
   
   getTask: (id: number) =>
     api.get<Task>(`/tasks/${id}`).then(r => r.data),
